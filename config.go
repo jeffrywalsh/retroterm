@@ -6,6 +6,8 @@ import (
     "os"
 )
 
+// Config holds server and proxy settings loaded from config.json.
+// Fields are a minimal subset intentionally kept stable for stateless use.
 type Config struct {
 	Server struct {
 		Port            int    `json:"port"`
@@ -28,6 +30,8 @@ type Config struct {
 
 var AppConfig *Config
 
+// LoadConfig reads and parses a JSON config file and applies defaults where
+// appropriate. It returns an error if the file is missing or invalid.
 func LoadConfig(path string) (*Config, error) {
 	// Check if config file exists
 	if _, err := os.Stat(path); os.IsNotExist(err) {
@@ -56,6 +60,8 @@ func LoadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
+// GetBBSList returns the curated/approved BBS list populated from CSV.
+// Kept as a function for future flexibility.
 func GetBBSList() []BBSInfo {
     // Return the approved BBS list populated from CSV (curated)
     // Maintains backward compatibility with existing handlers.

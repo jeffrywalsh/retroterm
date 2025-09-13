@@ -1,5 +1,8 @@
 package main
 
+// HTTP handlers and helpers for importing/parsing the Telnet BBS Guide and
+// serving the canonical BBS directory backed by bbs.csv.
+
 import (
     "encoding/csv"
     "encoding/json"
@@ -11,7 +14,9 @@ import (
     "strings"
 )
 
-// Get the full BBS directory (CSV is the single source of truth)
+// handleGetBBSDirectory returns the full BBS directory.
+// Note: bbs.csv is the single source of truth; failures return an empty list
+// so the UI remains responsive even if the file is temporarily unavailable.
 func handleGetBBSDirectory(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodGet {
         http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -30,7 +35,8 @@ func handleGetBBSDirectory(w http.ResponseWriter, r *http.Request) {
     json.NewEncoder(w).Encode(entries)
 }
 
-// Import Telnet BBS Guide raw text and regenerate bbs.csv
+// handleImportBBSGuide accepts raw text from the Telnet BBS Guide and
+// regenerates bbs.csv. The CSV becomes the canonical dataset used by the app.
 func handleImportBBSGuide(w http.ResponseWriter, r *http.Request) {
     if r.Method != http.MethodPost {
         http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -86,7 +92,9 @@ func handleImportBBSGuide(w http.ResponseWriter, r *http.Request) {
     json.NewEncoder(w).Encode(map[string]any{"success": true, "count": len(entries)})
 }
 
-// Minimal parser for Telnet BBS Guide text -> BBSEntry slice
+// parseBBSGuide converts a subset of the Telnet BBS Guide text into BBSEntries.
+// It uses simple heuristics to extract Name, Software and Telnet host:port.
+// Parsing is intentionally conservative; only entries with a valid host survive.
 func parseBBSGuide(text string) []BBSEntry {
     lines := strings.Split(text, "\n")
     var entries []BBSEntry
