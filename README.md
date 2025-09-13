@@ -5,7 +5,6 @@ RetroTerm is a minimal, stateless web app that serves a curated BBS directory an
 - ZMODEM receive via the external `lrzsz` tools (uses `rz`)
 - Outbound connections over Tor via a local SOCKS5 proxy
 
-
 ## Build & Run
 
 Prerequisites:
