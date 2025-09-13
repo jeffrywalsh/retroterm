@@ -1,0 +1,38 @@
+# Ignore everything by default
+*
+
+# Allow this file so the rules persist
+!.gitignore
+
+# Allow the current working set of files
+!LICENSE
+!ansi_enhanced.go
+!api.go
+!bbs.csv
+!bbs_directory.go
+!config.go
+!config.json
+!cp437_enhanced.go
+!directory_handlers.go
+!go.mod
+!go.sum
+!main.go
+!proxy.go
+!zmodem_lrzsz.go
+
+# Allow the static directory itself, but only whitelist specific files inside
+!static/
+!static/style.css
+!static/index.html
+!static/bbs.json
+!static/auth.js
+!static/zmodem-handler.js
+!static/zmodem-integration.html
+!static/zmodem.min.js
+!static/zmodem-lib.js
+!static/bbs_seed.json
+!static/directory.js
+!static/app.js
+!static/favicon.svg
+
+# By default, everything else remains ignored
