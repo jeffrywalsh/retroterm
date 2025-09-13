@@ -40,5 +40,6 @@
 !.github/
 !.github/workflows/
 !.github/workflows/ci.yml
+!.github/ruleset-protect-main.json
 
 # By default, everything else remains ignored
