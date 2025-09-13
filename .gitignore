@@ -36,4 +36,9 @@
 !static/app.js
 !static/favicon.svg
 
+# Allow GitHub Actions workflows
+!.github/
+!.github/workflows/
+!.github/workflows/ci.yml
+
 # By default, everything else remains ignored
