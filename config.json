@@ -1,0 +1,15 @@
+{
+  "server": {
+    "port": 8080,
+    "useCuratedList": true,
+    "externalBaseURL": "https://retroterm.com"
+  },
+  "proxy": {
+    "enabled": true,
+    "type": "tor",
+    "host": "127.0.0.1",
+    "port": 9050,
+    "username": "",
+    "password": ""
+  }
+}

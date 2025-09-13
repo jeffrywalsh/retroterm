@@ -1,0 +1,226 @@
+[
+  {
+    "name": "A-NET ONLINE",
+    "software": "Synchronet",
+    "host": "a-net.online",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "AMIS XE",
+    "software": "Atari",
+    "host": "amis86.ddns.net",
+    "port": 9000,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "ARDA-BBS.COM",
+    "software": "Mystic",
+    "host": "arda-bbs.com",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "BASEMENT BBS",
+    "software": "BBS Express Pro",
+    "host": "basementbbs.ddns.net",
+    "port": 9000,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "BIG TIME BBS",
+    "software": "Mystic",
+    "host": "bigtimebbs.net",
+    "port": 2323,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "BORDERLINE BBS",
+    "software": "All American",
+    "host": "borderlinebbs.dyndns.org",
+    "port": 6400,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "COTTONWOOD BBS",
+    "software": "Color 64",
+    "host": "cottonwoodbbs.dyndns.org",
+    "port": 6502,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "DARK REALMS",
+    "software": "Renegade",
+    "host": "bbs.darkrealms.ca",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "DIAMOND MINE ONLINE (SYNCHRONET)",
+    "software": "Synchronet",
+    "host": "bbs.dmine.net",
+    "port": 24,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "DIAMOND MINE ONLINE (WWIV)",
+    "software": "WWIV",
+    "host": "bbs.dmine.net",
+    "port": 2323,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "DIGITAL DISTORTION",
+    "software": "Synchronet",
+    "host": "bbs.digitaldistortionbbs.com",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "END OF THE LINE BBS",
+    "software": "Synchronet",
+    "host": "endofthelinebbs.com",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "ENIAC 2.0 BBS",
+    "software": "Mystic",
+    "host": "eniacv2.net",
+    "port": 1337,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "HEIGHTS BBS",
+    "software": "C-Net",
+    "host": "heightsbbs.heightspc.net",
+    "port": 6860,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "KEEP BBS",
+    "software": "Worldgroup",
+    "host": "thekeep.net",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "LEVEL 29",
+    "software": "Custom",
+    "host": "bbs.fozztexx.com",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "MAGNUM BBS",
+    "software": "Synchronet",
+    "host": "magnumbbs.net",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "MOE'S TAVERN",
+    "software": "GT-2000",
+    "host": "moetiki.ddns.net",
+    "port": 27,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "NEVER NEVER LAND BBS",
+    "software": "Mystic",
+    "host": "neverneverlandbbs.com",
+    "port": 2323,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "OUTPOST 9",
+    "software": "WWIV",
+    "host": "bbs.outpost9.co",
+    "port": 2023,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "PHOENIX BBS",
+    "software": "MBSE",
+    "host": "phoenix.bnbbbs.net",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "PUBLIC ELECTRONIC NETWORKED INFORMATION SYSTEM",
+    "software": "WWIV",
+    "host": "penisys.online",
+    "port": 6502,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "REIGN OF FIRE",
+    "software": "C-Net",
+    "host": "call.rofbbs.com",
+    "port": 6800,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "STARBASE 11 BBS",
+    "software": "Mystic",
+    "host": "bbs.starbase11.de",
+    "port": 2323,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "STARDOC 134",
+    "software": "WWIV",
+    "host": "bbs.stardoc134.com",
+    "port": 2323,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "TITANTIC BBS TELNET",
+    "software": "Renegade",
+    "host": "ttb.rgbbs.info",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "TUXEDOCAT LOUNGE",
+    "software": "Wildcat",
+    "host": "bbs.tuxedocatbbs.com",
+    "port": 2323,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  },
+  {
+    "name": "WIZARD'S RAINBOW",
+    "software": "Wildcat",
+    "host": "wizardsrainbow.com",
+    "port": 23,
+    "protocol": "telnet",
+    "encoding": "CP437"
+  }
+]

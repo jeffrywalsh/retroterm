@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Zmodem Integration Guide</title>
+</head>
+<body>
+    <h1>Zmodem.js Integration</h1>
+    <p>To enable full Zmodem support, you need to:</p>
+    
+    <h2>Option 1: Use zmodem.js Library (Recommended)</h2>
+    <ol>
+        <li>Download zmodem.js from: <a href="https://github.com/FGasper/zmodemjs">https://github.com/FGasper/zmodemjs</a></li>
+        <li>Include the library in index.html</li>
+        <li>The library will handle the full Zmodem protocol in the browser</li>
+    </ol>
+    
+    <h2>Option 2: Server-side lrzsz</h2>
+    <ol>
+        <li>Install lrzsz: <code>sudo apt-get install lrzsz</code></li>
+        <li>Pipe the connection through rz/sz commands</li>
+        <li>More complex but handles all edge cases</li>
+    </ol>
+    
+    <h2>Option 3: Alternative Transfer Methods</h2>
+    <ul>
+        <li>Many BBSes offer HTTP/FTP downloads</li>
+        <li>Use a dedicated BBS client like SyncTERM</li>
+        <li>Some BBSes support Kermit or Xmodem which are simpler</li>
+    </ul>
+    
+    <p>The current implementation detects Zmodem but doesn't handle the full protocol.</p>
+</body>
+</html>
