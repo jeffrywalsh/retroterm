@@ -9,7 +9,9 @@ import (
 	"golang.org/x/net/proxy"
 )
 
-// CreateProxyDialer creates a SOCKS5 dialer if proxy is enabled
+// CreateProxyDialer constructs a net.Dialer or SOCKS5 proxy dialer depending
+// on configuration. When type is "tor", timeouts are extended to accommodate
+// typical Tor circuit setup delays.
 func CreateProxyDialer() (proxy.Dialer, error) {
 	if AppConfig == nil || !AppConfig.Proxy.Enabled {
 		// No proxy, use direct connection
@@ -50,7 +52,8 @@ func CreateProxyDialer() (proxy.Dialer, error) {
 	return dialer, nil
 }
 
-// DialWithProxy establishes a connection through proxy if configured
+// DialWithProxy establishes a network connection, routing through a SOCKS5
+// proxy if enabled in the config. Errors are wrapped with context.
 func DialWithProxy(network, address string) (net.Conn, error) {
 	dialer, err := CreateProxyDialer()
 	if err != nil {

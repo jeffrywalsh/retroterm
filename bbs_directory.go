@@ -1,5 +1,7 @@
 package main
 
+// CSV-backed directory loader and a tiny in-process cache for the curated BBS list.
+
 import (
     "encoding/csv"
     "fmt"
@@ -10,6 +12,9 @@ import (
     "time"
 )
 
+// BBSEntry represents a single BBS listing parsed from bbs.csv.
+// Only a subset of fields are used by the UI/runtime today; others are
+// reserved for future enhancements or richer directories.
 type BBSEntry struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
@@ -26,7 +31,9 @@ type BBSEntry struct {
 	IsFavorite  bool   `json:"is_favorite,omitempty"`
 }
 
-// LoadBBSFromCSV loads BBS entries from a CSV file
+// LoadBBSFromCSV loads BBS entries from a CSV file with header
+// [Name, Software, Telnet Server Address]. Address may be host or host:port.
+// Missing ports default to 23 (telnet). Invalid rows are skipped.
 func LoadBBSFromCSV(filename string) ([]BBSEntry, error) {
 	file, err := os.Open(filename)
 	if err != nil {
@@ -124,7 +131,9 @@ var (
     bbsCacheMu     sync.RWMutex
 )
 
-// GetBBSDirectoryEntries returns BBS entries from bbs.csv with basic caching.
+// GetBBSDirectoryEntries returns BBS entries from bbs.csv with basic mtime
+// caching. A defensive copy is returned to callers to prevent accidental
+// mutation of the cached slice.
 func GetBBSDirectoryEntries() ([]BBSEntry, error) {
     const file = "bbs.csv"
     fi, err := os.Stat(file)

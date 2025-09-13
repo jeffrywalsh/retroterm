@@ -1,5 +1,9 @@
 package main
 
+// Server entry point and WebSocket <-> telnet/SSH bridge. This file wires the
+// HTTP API, static file serving, WebSocket session lifecycle, and the
+// ZMODEM/Telnet processing pipeline.
+
 import (
     "bytes"
     "encoding/base64"
@@ -76,14 +80,16 @@ type BBSInfo struct {
 	Encoding    string `json:"encoding,omitempty"`
 }
 
-// ZmodemHandler interface for different Zmodem implementations
+// ZmodemHandler abstracts different ZMODEM implementations (e.g., external
+// lrzsz vs. potential pure-Go). Only a minimal interface is required.
 type ZmodemHandler interface {
 	ProcessData(data []byte) ([]byte, bool)
 	Cancel()
 	Active() bool
 }
 
-// Client represents a WebSocket client connection that bridges to telnet/SSH
+// Client represents one browser session bridged to a single remote BBS
+// connection (telnet or SSH). It owns the ZMODEM lifecycle for that session.
 type Client struct {
     ws             *websocket.Conn // WebSocket connection to browser
     telnet         net.Conn        // Telnet connection to BBS
@@ -313,6 +319,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// sendBBSList sends the current curated BBS list to the browser.
 func (c *Client) sendBBSList() {
     msg := Message{
         Type:    "bbsList",
@@ -321,6 +328,7 @@ func (c *Client) sendBBSList() {
     c.sendJSON(msg)
 }
 
+// connectToBBS looks up a curated BBS by ID and starts a telnet/SSH connection.
 func (c *Client) connectToBBS(bbsID string) {
     for _, bbs := range ApprovedBBSList {
         if bbs.ID == bbsID {
@@ -339,6 +347,8 @@ func (c *Client) connectToBBS(bbsID string) {
 	c.sendMessage("error", fmt.Sprintf("BBS not found: %s", bbsID))
 }
 
+// connectTelnet dials a telnet endpoint (optionally via proxy) and starts
+// the read loop. A ZMODEM receiver is lazily created for telnet sessions.
 func (c *Client) connectTelnet(host string, port int) {
 	address := fmt.Sprintf("%s:%d", host, port)
 	log.Printf("Connecting to telnet://%s", address)
@@ -362,6 +372,8 @@ func (c *Client) connectTelnet(host string, port int) {
 	go c.readTelnet()
 }
 
+// readTelnet pumps data from the telnet connection to the browser, handling
+// telnet negotiations, CP437 conversion, ANSI processing, and ZMODEM detection.
 func (c *Client) readTelnet() {
 	buffer := make([]byte, 8192)
 
@@ -470,7 +482,7 @@ func (c *Client) readTelnet() {
 	}
 }
 
-// hasZmodemSignature checks for Zmodem start signatures
+// hasZmodemSignature heuristically detects common ZMODEM start sequences.
 func (c *Client) hasZmodemSignature(data []byte) bool {
 	// Check for common Zmodem start sequences
 	patterns := [][]byte{
@@ -487,6 +499,8 @@ func (c *Client) hasZmodemSignature(data []byte) bool {
 	return false
 }
 
+// processTelnetData filters and responds to telnet negotiations and returns
+// a cleaned stream suitable for terminal rendering and ZMODEM processing.
 func (c *Client) processTelnetData(data []byte) []byte {
 	const (
 		IAC  = 255
@@ -691,6 +705,8 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
 	}
 }
 
+// sendToRemote forwards user keystrokes to the active remote (telnet/SSH),
+// translating DEL->BS and optionally converting UTF-8 to CP437.
 func (c *Client) sendToRemote(data string) {
     // Copy refs while locked; do IO after unlocking
     c.mu.Lock()
@@ -724,6 +740,7 @@ func (c *Client) sendToRemote(data string) {
     }
 }
 
+// sendMessage is a convenience wrapper for emitting JSON messages.
 func (c *Client) sendMessage(msgType, message string) {
 	c.sendJSON(Message{
 		Type:    msgType,
@@ -731,6 +748,8 @@ func (c *Client) sendMessage(msgType, message string) {
 	})
 }
 
+// sendJSON writes a JSON message to the browser with a write deadline to avoid
+// stalled connections causing goroutine leaks.
 func (c *Client) sendJSON(msg Message) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -750,6 +769,8 @@ func (c *Client) sendJSON(msg Message) {
 	}
 }
 
+// disconnect tears down the session: cancels ZMODEM, closes sockets/sessions,
+// and signals the ping/pong loop to exit.
 func (c *Client) disconnect() {
     c.mu.Lock()
     defer c.mu.Unlock()

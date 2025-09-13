@@ -1,5 +1,7 @@
 package main
 
+// API handlers for read-only public endpoints exposed by the server.
+
 import (
 	"encoding/json"
 	"net/http"
@@ -12,7 +14,8 @@ type BBSListResponse struct {
 	BBSList []BBSInfo `json:"bbsList"`
 }
 
-// Handler to get public configuration
+// handleGetConfig responds with a minimal, public-safe configuration payload.
+// The app is stateless; this endpoint exists for forward compatibility.
 func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
@@ -27,7 +30,8 @@ func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(config)
 }
 
-// Handler to get default BBS list
+// handleGetDefaultBBSList returns the curated, approved BBS list that
+// the UI presents to users for safe connection selection.
 func handleGetDefaultBBSList(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
