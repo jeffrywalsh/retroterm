@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
+    <title>RetroTerm - BBS Terminal</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
+    <link rel="stylesheet" href="style.css?v=4">
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+</head>
+<body>
+    <div class="container">
+        <header class="header">
+            <div class="logo">
+                <span class="logo-text">RetroTerm</span>
+                <span class="logo-subtitle">Retro Connection Hub</span>
+            </div>
+            <div class="status-bar">
+                <div class="status-item">
+                    <span class="status-label">Status:</span>
+                    <span id="connection-status" class="status-value disconnected">Disconnected</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">Mode:</span>
+                    <span id="terminal-mode" class="status-value">ANSI</span>
+                </div>
+                <div class="status-item">
+                    <span class="status-label">BBS:</span>
+                    <span id="current-bbs" class="status-value">None</span>
+                </div>
+                <div class="status-item">
+                    <label for="charset" class="status-label">Encoding:</label>
+                    <select id="charset" class="form-control" style="width:auto; padding: 0.25rem 0.5rem;">
+                        <option value="CP437">MS-DOS CP437</option>
+                        <option value="UTF-8">UTF-8</option>
+                    </select>
+                </div>
+                <div class="status-item">
+                    <button id="reconnect-btn-header" class="btn btn-primary btn-small" style="display: none;" title="Reconnect to last BBS" aria-label="Reconnect to last BBS">Reconnect</button>
+                    <button id="disconnect-btn-header" class="btn btn-danger btn-small" style="display: none;" title="Disconnect" aria-label="Disconnect">Disconnect</button>
+                </div>
+                <div class="status-item menu">
+                    <button id="menu-button" class="btn-small menu-button" aria-haspopup="true" aria-expanded="false">Menu ▾</button>
+                    <div id="menu-dropdown" class="menu-dropdown" role="menu" aria-hidden="true">
+                        <button id="browse-directory-btn" class="menu-item" role="menuitem">Directory</button>
+                        <button id="open-settings-btn" class="menu-item" role="menuitem">Settings</button>
+                    </div>
+                </div>
+            </div>
+        </header>
+
+        <div class="main-content">
+            <div class="terminal-area">
+                <div id="terminal-container"></div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Auth modals removed: using local favorites only -->
+
+    <!-- BBS Directory Browser Modal -->
+    <div id="browse-directory-modal" class="modal" style="display: none;">
+        <div class="modal-content modal-large">
+            <div class="modal-header">
+                <h2>BBS Directory</h2>
+                <span class="modal-close">&times;</span>
+            </div>
+            <div class="modal-body dirflat">
+                <div class="dirflat-toolbar">
+                    <input type="text" id="directory-search" class="form-control dirflat-search" placeholder="Filter by name, software or address">
+                </div>
+                <p style="color: var(--text-secondary); font-size: 0.85rem; margin: 0.5rem 0;">Click any BBS to connect</p>
+                <div class="dirflat-table-wrap">
+                    <table class="dirflat-table" id="dirflat-table">
+                        <thead>
+                            <tr>
+                                <th style="width:36px;" data-col="fav">Fav</th>
+                                <th data-col="name">Name</th>
+                                <th data-col="software">Software</th>
+                                <th data-col="address">Address</th>
+                            </tr>
+                        </thead>
+                        <tbody id="dirflat-body"></tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Settings Modal -->
+    <div id="settings-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Settings</h2>
+                <span class="modal-close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div class="form-group">
+                    <label for="terminal-size">Terminal Size</label>
+                    <select id="terminal-size" class="form-control">
+                        <option value="80x25">80×25 (Classic BBS)</option>
+                        <option value="100x31">100×31 (Extended)</option>
+                    </select>
+                </div>
+                <div class="form-group">
+                    <label for="mobile-mode-toggle">Mobile Mode</label>
+                    <select id="mobile-mode-toggle" class="form-control">
+                        <option value="auto">Auto (default)</option>
+                        <option value="on">On</option>
+                        <option value="off">Off</option>
+                    </select>
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Optimizes layout and fits terminal on small screens.</div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="font-size">Font Size</label>
+                    <input type="range" id="font-size" min="12" max="24" value="16" class="form-range">
+                    <span id="font-size-value">16px</span>
+                </div>
+            </div>
+            <div class="modal-footer" style="padding:1rem; display:flex; justify-content:flex-end; gap:0.5rem;">
+                <button class="btn-small modal-close">Close</button>
+            </div>
+        </div>
+    </div>
+
+    
+
+    <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-webgl@0.16.0/lib/xterm-addon-webgl.js"></script>
+    <script src="zmodem.min.js"></script>
+    <script src="zmodem-lib.js"></script>
+    <script src="directory.js?v=4"></script>
+    <script src="auth.js?v=5"></script>
+    <script src="app.js?v=8"></script>
+</body>
+</html>
