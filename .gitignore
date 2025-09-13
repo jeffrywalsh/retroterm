@@ -6,6 +6,7 @@
 
 # Allow the current working set of files
 !LICENSE
+!README.md
 !ansi_enhanced.go
 !api.go
 !bbs.csv
