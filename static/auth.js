@@ -116,7 +116,8 @@ async function loadBBSDirectory() {
             protocol: (item.protocol || 'telnet').toLowerCase(),
             software: item.software || '',
             description: item.description || '',
-            encoding: item.encoding || 'CP437'
+            encoding: item.encoding || 'CP437',
+            location: item.location || ''
         }));
     } catch (error) {
         console.error('Failed to load BBS directory:', error);
@@ -129,6 +130,7 @@ function hydrateDirFlatFromDirectory() {
     dirflatData = (bbsDirectory || []).map(b => ({
         name: b.name || '',
         software: b.software || '',
+        location: b.location || '',
         address: `${b.host || ''}${b.port ? ':' + b.port : ''}`,
         id: b.id
     }));
@@ -141,6 +143,7 @@ function renderDirFlat(searchTerm = '') {
     let rows = dirflatData.filter(r => {
         if (!s) return true;
         return (r.name || '').toLowerCase().includes(s) ||
+               (r.location || '').toLowerCase().includes(s) ||
                (r.software || '').toLowerCase().includes(s) ||
                (r.address || '').toLowerCase().includes(s);
     });
@@ -176,11 +179,12 @@ function renderDirFlat(searchTerm = '') {
         <tr data-id="${r.id}">
             <td class="fav"><button class="${starClass}" data-id="${r.id}" title="Toggle favorite">${star}</button></td>
             <td class="name">${escapeHtml(r.name)}</td>
+            <td class="location">${escapeHtml(r.location || '')}</td>
             <td class="software">${escapeHtml(r.software || '')}</td>
             <td class="addr">${escapeHtml(r.address)}</td>
         </tr>`;
     }).join('');
-    tbody.innerHTML = html || '<tr><td colspan="4" class="software">No results</td></tr>';
+    tbody.innerHTML = html || '<tr><td colspan="5" class="software">No results</td></tr>';
     // Keep header sort indicators in sync
     updateDirflatSortIndicators();
 
