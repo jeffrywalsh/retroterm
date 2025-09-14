@@ -71,13 +71,14 @@ type Message struct {
 }
 
 type BBSInfo struct {
-	ID          string `json:"id"`
-	Name        string `json:"name"`
-	Host        string `json:"host"`
-	Port        int    `json:"port"`
-	Protocol    string `json:"protocol"`
-	Description string `json:"description"`
-	Encoding    string `json:"encoding,omitempty"`
+    ID          string `json:"id"`
+    Name        string `json:"name"`
+    Host        string `json:"host"`
+    Port        int    `json:"port"`
+    Protocol    string `json:"protocol"`
+    Description string `json:"description"`
+    Encoding    string `json:"encoding,omitempty"`
+    Location    string `json:"location,omitempty"`
 }
 
 // ZmodemHandler abstracts different ZMODEM implementations (e.g., external
@@ -167,6 +168,7 @@ func refreshApprovedBBSList() error {
                 Protocol:    strings.ToLower(e.Protocol),
                 Description: e.Description,
                 Encoding:    e.Encoding,
+                Location:    e.Location,
             })
         }
         ApprovedBBSList = list
