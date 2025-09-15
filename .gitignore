@@ -14,6 +14,7 @@
 !config.go
 !config.json
 !cp437_enhanced.go
+!ansi_music.go
 !directory_handlers.go
 !go.mod
 !go.sum
@@ -34,6 +35,7 @@
 !static/bbs_seed.json
 !static/directory.js
 !static/app.js
+!static/ansi-music.js
 !static/favicon.svg
 
 # Allow GitHub Actions workflows
