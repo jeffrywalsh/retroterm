@@ -22,16 +22,51 @@ func NewANSIEnhancedProcessor(debug bool) *ANSIEnhancedProcessor {
 
 // ProcessANSIData processes data with enhanced ANSI handling
 func (p *ANSIEnhancedProcessor) ProcessANSIData(data []byte) []byte {
-	result := make([]byte, 0, len(data)*2) // Extra space for expansions
-	
-	for i := 0; i < len(data); i++ {
-		b := data[i]
-		
-		// Handle special control characters
-		switch b {
-		case 0x0C: // Form Feed - clear screen and home cursor
-			if p.debugMode {
-				log.Printf("ANSI: Form feed detected, converting to ESC[2J ESC[H")
+    result := make([]byte, 0, len(data)*2) // Extra space for expansions
+    
+    for i := 0; i < len(data); i++ {
+        b := data[i]
+        
+        // Normalize 8-bit C1 control codes to 7-bit ESC-prefixed sequences
+        // Common mappings: CSI (0x9B) -> ESC '[', OSC (0x9D) -> ESC ']', DCS (0x90) -> ESC 'P', ST (0x9C) -> ESC '\\'
+        if b >= 0x80 && b <= 0x9F {
+            switch b {
+            case 0x9B: // CSI
+                p.inSequence = true
+                p.sequenceBuffer = p.sequenceBuffer[:0]
+                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, '[')
+                continue
+            case 0x9D: // OSC
+                p.inSequence = true
+                p.sequenceBuffer = p.sequenceBuffer[:0]
+                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, ']')
+                continue
+            case 0x90: // DCS
+                p.inSequence = true
+                p.sequenceBuffer = p.sequenceBuffer[:0]
+                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, 'P')
+                continue
+            case 0x9C: // ST (String Terminator)
+                if p.inSequence {
+                    p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, '\\')
+                    // Will be recognized as complete by isSequenceComplete for OSC; pass through
+                    processed := p.processCompleteSequence()
+                    result = append(result, processed...)
+                    p.inSequence = false
+                    p.sequenceBuffer = p.sequenceBuffer[:0]
+                    continue
+                }
+                // Not in a sequence; emit ESC \
+                result = append(result, 0x1B, '\\')
+                continue
+            }
+        }
+
+        // Handle special control characters
+        switch b {
+        case 0x0C: // Form Feed - clear screen and home cursor
+            if p.debugMode {
+                log.Printf("ANSI: Form feed detected, converting to ESC[2J ESC[H")
 			}
 			// Clear screen and move cursor to home
 			result = append(result, 0x1B, '[', '2', 'J')  // Clear entire screen
@@ -119,6 +154,14 @@ func (p *ANSIEnhancedProcessor) isSequenceComplete() bool {
 		case '(', ')', '*', '+': // Character set selection
 			return len(p.sequenceBuffer) >= 3
 			
+		case '7', '8':
+			// DECSC/DECRC (Save/Restore cursor): ESC 7 / ESC 8
+			return true
+
+		case 'c', 'D', 'M', 'E':
+			// Common single-char ESC sequences: RIS/IND/RI/NEL
+			return true
+			
 		default:
 			// Two-character sequences
 			if p.sequenceBuffer[1] >= 0x40 && p.sequenceBuffer[1] <= 0x7F {
@@ -171,18 +214,27 @@ func (p *ANSIEnhancedProcessor) processCompleteSequence() []byte {
 		}
 	}
 	
-	// Check for clear screen variations
-	if len(p.sequenceBuffer) >= 4 && p.sequenceBuffer[0] == 0x1B && p.sequenceBuffer[1] == '[' {
-		// ESC[2J - clear entire screen
-		if bytes.Contains(p.sequenceBuffer, []byte{'2', 'J'}) {
-			if p.debugMode {
-				log.Printf("ANSI: Clear screen ESC[2J")
-			}
-			// After clear screen, we should also home the cursor
-			// But only if it's not already followed by a home command
-			return p.sequenceBuffer
-		}
-	}
+    // Check for clear screen variations
+    if len(p.sequenceBuffer) >= 4 && p.sequenceBuffer[0] == 0x1B && p.sequenceBuffer[1] == '[' {
+        // ESC[2J - clear entire screen
+        if bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', '2', 'J'}) || bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', '0', ';', '2', 'J'}) {
+            if p.debugMode {
+                log.Printf("ANSI: Clear screen ESC[2J (homing)")
+            }
+            // Home cursor after clear screen for ANSI.SYS compatibility
+            return []byte{0x1B, '[', '2', 'J', 0x1B, '[', 'H'}
+        }
+        // Generic contains '2J'
+        if bytes.Contains(p.sequenceBuffer, []byte{'2', 'J'}) {
+            if p.debugMode {
+                log.Printf("ANSI: Clear screen ESC[2J (homing)")
+            }
+            out := make([]byte, 0, len(p.sequenceBuffer)+3)
+            out = append(out, p.sequenceBuffer...)
+            out = append(out, 0x1B, '[', 'H')
+            return out
+        }
+    }
 	
 	// Log unknown or interesting sequences in debug mode
 	if p.debugMode && len(p.sequenceBuffer) > 2 {

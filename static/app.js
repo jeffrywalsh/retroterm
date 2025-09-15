@@ -16,6 +16,7 @@ class BBSTerminal {
         this._indeterminateActive = false;
         this.currentBBS = null;
         this.lastConnection = null;
+        this.music = null;
         // fullscreen state removed
         
         this.loadConfig();
@@ -23,6 +24,9 @@ class BBSTerminal {
         this.initEventListeners();
         this.loadSettings();
         this.setupResponsive();
+
+        // Expose debug helpers for hexdumps via console
+        this.installDebugDumpHelpers();
     }
 
     async loadConfig() {
@@ -33,6 +37,85 @@ class BBSTerminal {
         } catch (error) {
             console.error('Failed to load config:', error);
         }
+    }
+
+    // Debug: install console-callable helpers to hexdump on-screen cells
+    installDebugDumpHelpers() {
+        const self = this;
+        // Dump a single cell (row, col are 1-based in viewport coordinates)
+        window.dumpCell = function(row, col) {
+            if (!self.terminal) return null;
+            const buf = self.terminal.buffer.active;
+            const top = buf.viewportY;
+            const line = buf.getLine(top + (row - 1));
+            if (!line) return null;
+            const cell = line.getCell(col - 1);
+            if (!cell) return null;
+            const ch = cell.getChars();
+            const cp = ch && ch.length ? ch.codePointAt(0) : 0;
+            return {
+                row, col,
+                char: ch,
+                codePoint: cp,
+                codePointHex: cp ? '0x' + cp.toString(16) : null,
+                width: cell.getWidth()
+            };
+        };
+
+        // Dump a line's text and hex code points
+        window.dumpLine = function(row) {
+            if (!self.terminal) return null;
+            const buf = self.terminal.buffer.active;
+            const top = buf.viewportY;
+            const line = buf.getLine(top + (row - 1));
+            if (!line) return null;
+            const text = line.translateToString(true);
+            const codes = [];
+            for (let x = 0; x < self.terminal.cols; x++) {
+                const cell = line.getCell(x);
+                if (!cell) break;
+                const ch = cell.getChars();
+                const cp = ch && ch.length ? ch.codePointAt(0) : 0;
+                codes.push(cp ? cp.toString(16).padStart(2,'0') : '00');
+            }
+            const hex = codes.join(' ');
+            const out = { row, text, hex };
+            console.log('dumpLine', out);
+            return out;
+        };
+
+        // Dump a rectangular region (rows/cols are 1-based, inclusive)
+        window.dumpRegion = function(r1, c1, r2, c2) {
+            if (!self.terminal) return null;
+            const buf = self.terminal.buffer.active;
+            const top = buf.viewportY;
+            const rows = self.terminal.rows;
+            const cols = self.terminal.cols;
+            r1 = Math.max(1, Math.min(rows, r1|0));
+            r2 = Math.max(1, Math.min(rows, r2|0));
+            c1 = Math.max(1, Math.min(cols, c1|0));
+            c2 = Math.max(1, Math.min(cols, c2|0));
+            if (r2 < r1) [r1, r2] = [r2, r1];
+            if (c2 < c1) [c1, c2] = [c2, c1];
+            const lines = [];
+            for (let ry = r1; ry <= r2; ry++) {
+                const line = buf.getLine(top + (ry - 1));
+                if (!line) break;
+                const text = [];
+                const hex = [];
+                for (let cx = c1; cx <= c2; cx++) {
+                    const cell = line.getCell(cx - 1);
+                    if (!cell) break;
+                    const ch = cell.getChars() || '';
+                    const cp = ch.length ? ch.codePointAt(0) : 0;
+                    text.push(ch || ' ');
+                    hex.push(cp ? cp.toString(16).padStart(2,'0') : '00');
+                }
+                lines.push({ row: ry, text: text.join(''), hex: hex.join(' ') });
+            }
+            console.log('dumpRegion', { r1, c1, r2, c2, lines });
+            return { r1, c1, r2, c2, lines };
+        };
     }
 
     initTerminal() {
@@ -101,6 +184,10 @@ class BBSTerminal {
         this.terminal.writeln('\x1b[1;32mRetroTerm Ready\x1b[0m');
         this.terminal.writeln('\x1b[36mSelect a BBS from Quick Connect or Browse the directory\x1b[0m');
         this.terminal.writeln('');
+        // Init ANSI music player
+        try {
+            if (window.AnsiMusicPlayer) this.music = new AnsiMusicPlayer();
+        } catch {}
     }
 
     initEventListeners() {
@@ -349,6 +436,12 @@ class BBSTerminal {
                     } else {
                         const text = new TextDecoder('utf-8', { fatal: false }).decode(bytes);
                         this.terminal.write(text);
+                    }
+                    break;
+
+                case 'music':
+                    if (this.music && msg.message) {
+                        this.music.parseAndQueue(msg.message);
                     }
                     break;
                     

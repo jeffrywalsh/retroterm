@@ -42,3 +42,9 @@
 !.github/workflows/ci.yml
 
 # By default, everything else remains ignored
+# Local debug artifacts
+*.log
+*.tmp
+*.swp
+*.DS_Store
+node_modules/
