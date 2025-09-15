@@ -29,11 +29,51 @@ class BBSTerminal {
         this.installDebugDumpHelpers();
     }
 
+    // Minimal WS connect used for TEST_MODE Fake Connect (no telnet/ssh connect)
+    connectWebSocket() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
+        this.ws = new WebSocket(wsUrl);
+        this.ws.onopen = () => {
+            this.updateStatus('Connected', 'connected');
+            this.terminal.writeln('\x1b[32mWebSocket connected (test mode)\x1b[0m');
+            // Initialize Zmodem if available (harmless; may do nothing)
+            if (typeof ZmodemIntegration !== 'undefined') {
+                try {
+                    this.zmodem = new ZmodemIntegration(this.terminal, this.ws);
+                } catch {}
+            }
+        };
+        this.setupWebSocketHandlers();
+    }
+
     async loadConfig() {
         try {
             const response = await fetch('/api/config');
             const config = await response.json();
             this.allowManualConnection = false; // Always false now, no manual connections
+            this.testMode = !!config.testMode;
+            if (this.testMode) {
+                const btn = document.getElementById('fake-connect-btn');
+                if (btn) {
+                    btn.style.display = 'inline-block';
+                    btn.addEventListener('click', () => {
+                        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                            this.terminal.writeln('\x1b[36mPlaying captured test stream...\x1b[0m');
+                            this.ws.send(JSON.stringify({ type: 'playCapture' }));
+                        } else {
+                            this.terminal.writeln('\x1b[33mNot connected — opening WS...\x1b[0m');
+                            this.connectWebSocket();
+                            setTimeout(() => {
+                                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                                    this.ws.send(JSON.stringify({ type: 'playCapture' }));
+                                }
+                            }, 500);
+                        }
+                    });
+                }
+            }
         } catch (error) {
             console.error('Failed to load config:', error);
         }
@@ -122,8 +162,9 @@ class BBSTerminal {
         this.terminal = new Terminal({
             cursorBlink: true,
             fontSize: this.fontSize,
-            // Original system monospace stack
-            fontFamily: 'Courier New, Courier, monospace',
+            // Prefer a font with PETSCII/ATASCII glyph coverage (see static/fonts)
+            // Fallback to standard monospace if unavailable
+            fontFamily: 'RetroTermLegacy, Courier New, Courier, monospace',
             
             // Match the classic IBM PC VGA 16-color palette for ANSI art accuracy
             drawBoldTextInBrightColors: true,
@@ -274,6 +315,13 @@ class BBSTerminal {
                     this.ws.send(JSON.stringify({ type: 'setCharset', charset: newCharset }));
                     this.terminal.writeln(`\x1b[36mSwitched character encoding to: ${newCharset}\x1b[0m`);
                 }
+                // For PETSCII/ATASCII, prefer 40x25 for authenticity
+                if (newCharset === 'PETSCIIU' || newCharset === 'PETSCIIL' || newCharset === 'ATASCII') {
+                    const sel = document.getElementById('terminal-size');
+                    if (sel) sel.value = '40x25';
+                    this.resizeTerminal(40, 25);
+                }
+                // For AUTO, let the server auto-detect and adjust size
             });
         }
 

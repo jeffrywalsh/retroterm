@@ -126,6 +126,17 @@ type Client struct {
 
     // ANSI music processor (CSI | sequences)
     music *AnsiMusicProcessor
+    // Simple autodetect state to avoid flapping
+    // Once we switch from CP437 to a legacy charset, we won't auto-switch again
+    // unless explicitly changed by the user.
+    // Legacy preamble suppression (buffer until first clear/home)
+    preambleActive bool
+    preambleBuf    []byte
+    preambleStart  time.Time
+
+    // Capture support
+    captureOn   bool
+    capturePath string
 }
 
 // Global list of approved BBSes (loaded from both config and bbs.json)
@@ -177,6 +188,8 @@ func refreshApprovedBBSList() error {
     if entries, err := GetBBSDirectoryEntries(); err == nil && len(entries) > 0 {
         list := make([]BBSInfo, 0, len(entries))
         for _, e := range entries {
+            // No BBS-specific overrides; let client auto-detect if desired
+            enc := e.Encoding
             list = append(list, BBSInfo{
                 ID:          e.ID,
                 Name:        e.Name,
@@ -184,7 +197,7 @@ func refreshApprovedBBSList() error {
                 Port:        e.Port,
                 Protocol:    strings.ToLower(e.Protocol),
                 Description: e.Description,
-                Encoding:    e.Encoding,
+                Encoding:    enc,
                 Location:    e.Location,
             })
         }
@@ -246,6 +259,16 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
         cursorRow:    1,
         cursorCol:    1,
         cursorSeqBuf: make([]byte, 0, 64),
+    }
+    // Enable raw capture if requested (writes to CAPTURE_FILE or capture.bin)
+    if os.Getenv("CAPTURE_RAW") == "true" {
+        client.captureOn = true
+        client.capturePath = os.Getenv("CAPTURE_FILE")
+        if client.capturePath == "" { client.capturePath = "capture.bin" }
+        // Truncate on new session if CAPTURE_TRUNCATE=true
+        if os.Getenv("CAPTURE_TRUNCATE") == "true" {
+            _ = os.WriteFile(client.capturePath, nil, 0644)
+        }
     }
     // Music emitter sends a JSON message to the client; keep simple payload
     client.music = NewAnsiMusicProcessor(func(payload string) {
@@ -309,9 +332,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				client.sendMessage("error", "Connection blocked: Host not in approved list")
 				continue
 			}
-			if msg.Charset != "" {
-				client.charset = msg.Charset
-			}
+            if msg.Charset != "" {
+                client.setCharsetAndAdjust(msg.Charset)
+            }
             if msg.Protocol == "telnet" {
                 go client.connectTelnet(msg.Host, msg.Port)
             } else if msg.Protocol == "ssh" {
@@ -329,7 +352,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
             _ = sshSession.WindowChange(msg.Rows, msg.Cols)
         }
         // Accept only fixed BBS-friendly sizes for telnet NAWS
-        if (msg.Cols == 80 && msg.Rows == 25) || (msg.Cols == 100 && msg.Rows == 31) {
+        if (msg.Cols == 40 && (msg.Rows == 24 || msg.Rows == 25)) || (msg.Cols == 80 && msg.Rows == 25) || (msg.Cols == 100 && msg.Rows == 31) {
             client.mu.Lock()
             client.termCols = msg.Cols
             client.termRows = msg.Rows
@@ -340,18 +363,20 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
                 client.sendTelnetNAWS()
             }
         }
-		case "setCharset":
-			client.charset = msg.Charset
-		case "getBBSList":
-			client.sendBBSList()
-		case "connectToBBS":
-			// SECURITY: This message type only uses pre-approved BBS IDs
-			log.Printf("SECURITY: BBS connection via ID: %s", msg.BBSID)
-			client.connectToBBS(msg.BBSID)
-		case "cancelDownload":
-			if client.zmodemReceiver != nil {
-				client.zmodemReceiver.Cancel()
-			}
+        case "setCharset":
+            client.setCharsetAndAdjust(msg.Charset)
+        case "getBBSList":
+            client.sendBBSList()
+        case "connectToBBS":
+            // SECURITY: This message type only uses pre-approved BBS IDs
+            log.Printf("SECURITY: BBS connection via ID: %s", msg.BBSID)
+            client.connectToBBS(msg.BBSID)
+        case "playCapture":
+            go client.playCapture()
+        case "cancelDownload":
+            if client.zmodemReceiver != nil {
+                client.zmodemReceiver.Cancel()
+            }
         case "disconnect":
             client.disconnect()
             return
@@ -496,6 +521,13 @@ func (c *Client) readTelnet() {
 
             // Only send to terminal if not in active ZMODEM transfer and not in pre-suppression window
             if len(cleanData) > 0 && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) && !c.suppressZmodem {
+                // Optionally capture the stream for testing
+                if c.captureOn {
+                    if f, err := os.OpenFile(c.capturePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
+                        _, _ = f.Write(cleanData)
+                        _ = f.Close()
+                    }
+                }
                 // ANSI Music: detect and emit events, suppressing music sequences
                 if c.music != nil {
                     if remaining, consumed := c.music.Process(cleanData); consumed {
@@ -506,26 +538,95 @@ func (c *Client) readTelnet() {
                 if os.Getenv("TERM_ANSWERS") == "true" {
                     c.handleTerminalQueries(cleanData)
                 }
-                // Process ANSI sequences with enhanced processor
+                // Process ANSI sequences with enhanced processor (not for legacy charsets)
                 processedData := cleanData
                 if c.ansiEnhanced != nil && os.Getenv("ANSI_NORMALIZE") != "false" {
-                    processedData = c.ansiEnhanced.ProcessANSIData(cleanData)
+                    cs := strings.ToUpper(c.charset)
+                    if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" {
+                        processedData = c.ansiEnhanced.ProcessANSIData(cleanData)
+                    }
                 }
                 // Optional hex dump for diagnostics
                 if os.Getenv("HEX_DUMP") == "true" {
                     c.debugHexDump("TELNET->CLIENT", processedData, 256)
                 }
                 
-                // Convert CP437 to UTF-8 if needed
+                // Legacy preamble suppression: buffer until clear/home or timeout
+                csUp := strings.ToUpper(c.charset)
+                if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
+                    c.preambleBuf = append(c.preambleBuf, processedData...)
+                    if c.shouldFlushLegacyPreamble(processedData) {
+                        c.preambleActive = false
+                        processedData = c.preambleBuf
+                        // Reset buffer
+                        c.preambleBuf = c.preambleBuf[:0]
+                    } else {
+                        // Skip sending this chunk
+                        continue
+                    }
+                }
+
+                // No auto-detect/switching; rely on explicit charset selection
+
+                // Convert charset-specific bytes to UTF-8 for browser rendering
                 var outputData []byte
-                if c.charset == "CP437" {
+                bypassUsed := false
+                switch c.charset {
+                case "CP437":
                     utf8String := ConvertCP437ToUTF8Enhanced(processedData)
                     outputData = []byte(utf8String)
-                } else {
+                case "PETSCIIU", "PETSCIIL", "ATASCII":
+                    // Smart ASCII pass-through: check BEFORE control translation
+                    // to avoid bypassing when there are PETSCII control codes
+                    if shouldBypassLegacyMapping(processedData) {
+                        // Even in bypass mode, translate control codes to ANSI
+                        processedData = c.translateLegacyControls(processedData)
+                        processedData = normalizeCSISGRAny(processedData)
+                        outputData = processedData
+                        bypassUsed = true
+                    } else {
+                        // Phase 2: translate PETSCII/ATASCII control bytes into ANSI
+                        processedData = c.translateLegacyControls(processedData)
+                        processedData = normalizeCSISGRAny(processedData)
+                        if c.charset == "PETSCIIU" {
+                            utf8String := ConvertPETSCIIUToUTF8(processedData)
+                            outputData = []byte(utf8String)
+                        } else if c.charset == "PETSCIIL" {
+                            utf8String := ConvertPETSCIILToUTF8(processedData)
+                            outputData = []byte(utf8String)
+                        } else {
+                            utf8String := ConvertATASCIIToUTF8(processedData)
+                            outputData = []byte(utf8String)
+                        }
+                    }
+                default:
                     outputData = processedData
                 }
 
-				encoded := base64.StdEncoding.EncodeToString(outputData)
+                if os.Getenv("HEX_DUMP") == "true" {
+                    c.mu.Lock()
+                    cols := c.termCols
+                    rows := c.termRows
+                    cs := c.charset
+                    c.mu.Unlock()
+                    log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
+                    // Log the final bytes as the browser will see them
+                    logBytes := outputData
+                    if bytes.Contains(logBytes, []byte{0x1B, '['}) {
+                        logBytes = normalizeCSISGRAny(append([]byte(nil), logBytes...))
+                    }
+                    preview := string(logBytes)
+                    if len(preview) > 120 {
+                        preview = preview[:120] + "…"
+                    }
+                    log.Printf("TEXT (final) %s: %q", cs, preview)
+                }
+
+                // Final output guard: normalize any CSI SGR with uppercase 'M' or lowercase 'j'
+                if bytes.Contains(outputData, []byte{0x1B, '['}) {
+                    outputData = normalizeCSISGRAny(outputData)
+                }
+                encoded := base64.StdEncoding.EncodeToString(outputData)
                 c.sendJSON(Message{
                     Type:     "data",
                     Data:     encoded,
@@ -539,6 +640,114 @@ func (c *Client) readTelnet() {
             }
 		}
 	}
+}
+
+// playCapture replays a previously captured clean data stream (CAPTURE_FILE or capture.bin)
+// through the same processing pipeline used for telnet data.
+func (c *Client) playCapture() {
+    path := os.Getenv("CAPTURE_FILE")
+    if path == "" { path = "capture.bin" }
+    f, err := os.Open(path)
+    if err != nil {
+        c.sendMessage("error", fmt.Sprintf("Failed to open capture: %v", err))
+        return
+    }
+    defer f.Close()
+    buf := make([]byte, 1024)
+    for {
+        n, err := f.Read(buf)
+        if n > 0 {
+            c.processAndSendClean(buf[:n])
+            time.Sleep(20 * time.Millisecond)
+        }
+        if err == io.EOF {
+            break
+        }
+        if err != nil {
+            break
+        }
+    }
+}
+
+// processAndSendClean processes a "clean" (telnet-processed) byte slice through the
+// same display pipeline and emits it to the browser.
+func (c *Client) processAndSendClean(cleanData []byte) {
+    if len(cleanData) == 0 {
+        return
+    }
+    // ANSI music (optional)
+    if c.music != nil {
+        if remaining, consumed := c.music.Process(cleanData); consumed {
+            cleanData = remaining
+        }
+    }
+    if os.Getenv("TERM_ANSWERS") == "true" {
+        c.handleTerminalQueries(cleanData)
+    }
+    processedData := cleanData
+    if c.ansiEnhanced != nil && os.Getenv("ANSI_NORMALIZE") != "false" {
+        cs := strings.ToUpper(c.charset)
+        if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" {
+            processedData = c.ansiEnhanced.ProcessANSIData(cleanData)
+        }
+    }
+    // Legacy preamble suppression
+    csUp := strings.ToUpper(c.charset)
+    if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
+        c.preambleBuf = append(c.preambleBuf, processedData...)
+        if c.shouldFlushLegacyPreamble(processedData) {
+            c.preambleActive = false
+            processedData = c.preambleBuf
+            c.preambleBuf = c.preambleBuf[:0]
+        } else {
+            return
+        }
+    }
+    var outputData []byte
+    bypassUsed := false
+    switch c.charset {
+    case "CP437":
+        utf8String := ConvertCP437ToUTF8Enhanced(processedData)
+        outputData = []byte(utf8String)
+    case "PETSCIIU", "PETSCIIL", "ATASCII":
+        if shouldBypassLegacyMapping(processedData) {
+            processedData = c.translateLegacyControls(processedData)
+            processedData = normalizeCSISGRAny(processedData)
+            outputData = processedData
+            bypassUsed = true
+        } else {
+            processedData = c.translateLegacyControls(processedData)
+            processedData = normalizeCSISGRAny(processedData)
+            if c.charset == "PETSCIIU" {
+                utf8String := ConvertPETSCIIUToUTF8(processedData)
+                outputData = []byte(utf8String)
+            } else if c.charset == "PETSCIIL" {
+                utf8String := ConvertPETSCIILToUTF8(processedData)
+                outputData = []byte(utf8String)
+            } else {
+                utf8String := ConvertATASCIIToUTF8(processedData)
+                outputData = []byte(utf8String)
+            }
+        }
+    default:
+        outputData = processedData
+    }
+    if os.Getenv("HEX_DUMP") == "true" {
+        c.mu.Lock()
+        cols := c.termCols
+        rows := c.termRows
+        cs := c.charset
+        c.mu.Unlock()
+        log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
+        preview := string(outputData)
+        if len(preview) > 120 { preview = preview[:120] + "…" }
+        log.Printf("TEXT (final) %s: %q", cs, preview)
+    }
+    c.sendJSON(Message{
+        Type:     "data",
+        Data:     base64.StdEncoding.EncodeToString(outputData),
+        Encoding: "base64",
+    })
 }
 
 // hasZmodemSignature heuristically detects common ZMODEM start sequences.
@@ -656,8 +865,16 @@ func (c *Client) processTelnetData(data []byte) []byte {
                             // Process TTYPE SEND
                             if opt == TELOPT_TTYPE {
                                 if len(sb) >= 1 && sb[0] == TELQUAL_SEND {
-                                    // Reply: IAC SB TTYPE IS "ansi" IAC SE
-                                    ttype := []byte{'a', 'n', 's', 'i'}
+                                    // Reply: IAC SB TTYPE IS <type> IAC SE
+                                    termType := "ansi"
+                                    // Advertise PETSCII/ATASCII when selected
+                                    switch strings.ToUpper(c.charset) {
+                                    case "PETSCIIU", "PETSCIIL":
+                                        termType = "PETSCII"
+                                    case "ATASCII":
+                                        termType = "ATASCII"
+                                    }
+                                    ttype := []byte(termType)
                                     resp := []byte{IAC, SB, TELOPT_TTYPE, TELQUAL_IS}
                                     resp = append(resp, ttype...)
                                     resp = append(resp, IAC, SE)
@@ -698,6 +915,201 @@ func (c *Client) processTelnetData(data []byte) []byte {
     return clean
 }
 
+// detectLegacyCharset returns a suggested charset ("PETSCIIU" or "ATASCII") based on
+// simple byte pattern heuristics in the provided data. Empty string if no suggestion.
+// shouldBypassLegacyMapping returns true when the data chunk is mostly printable ASCII
+// and contains no PETSCII/ATASCII legacy control bytes, indicating this should be
+// displayed as plain text (e.g., busy messages, MOTD lines) even in legacy sessions.
+func shouldBypassLegacyMapping(data []byte) bool {
+    if len(data) == 0 {
+        return false
+    }
+    printable := 0
+    nonAscii := 0
+    for _, b := range data {
+        if (b >= 0x20 && b <= 0x7E) || b == '\r' || b == '\n' || b == '\t' {
+            printable++
+        } else if b >= 0x80 {
+            // Any byte >= 0x80 is likely PETSCII graphics or control
+            nonAscii++
+        }
+    }
+    // Only bypass if it's mostly printable ASCII with no high bytes
+    // This ensures PETSCII graphics (0x80-0xFF) always get converted
+    return nonAscii == 0 && printable*100/len(data) >= 85
+}
+
+// joinANSIChunks concatenates carry+chunk and returns (emit, rest) where emit contains
+// only complete data up to but not including any trailing incomplete ANSI escape
+// sequences (CSI/OSC/DCS/incomplete ESC). The rest should be carried to the next call.
+func joinANSIChunks(carry, chunk []byte) ([]byte, []byte) {
+    if len(carry) == 0 {
+        // Fast path: scan chunk only; if no incomplete sequences, emit as-is
+        cut := completeAnsiCutIndex(chunk)
+        if cut == len(chunk) {
+            return chunk, nil
+        }
+        // Carry tail
+        rest := make([]byte, len(chunk[cut:]))
+        copy(rest, chunk[cut:])
+        emit := make([]byte, cut)
+        copy(emit, chunk[:cut])
+        return emit, rest
+    }
+    buf := make([]byte, 0, len(carry)+len(chunk))
+    buf = append(buf, carry...)
+    buf = append(buf, chunk...)
+    cut := completeAnsiCutIndex(buf)
+    if cut == len(buf) {
+        return buf, nil
+    }
+    emit := make([]byte, cut)
+    copy(emit, buf[:cut])
+    rest := make([]byte, len(buf[cut:]))
+    copy(rest, buf[cut:])
+    return emit, rest
+}
+
+// completeAnsiCutIndex returns the index up to which data contains only complete
+// ANSI escape sequences. If an incomplete sequence is found at the end, returns
+// the start index of that sequence.
+func completeAnsiCutIndex(buf []byte) int {
+    i := 0
+    for i < len(buf) {
+        b := buf[i]
+        if b != 0x1B { // ESC
+            i++
+            continue
+        }
+        // Need at least one more byte to classify
+        if i+1 >= len(buf) {
+            return i
+        }
+        n := buf[i+1]
+        switch n {
+        case '[': // CSI: ESC [ params final
+            j := i + 2
+            for j < len(buf) {
+                c := buf[j]
+                if c >= 0x40 && c <= 0x7E { // final
+                    j++
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            return i // incomplete CSI
+        case ']': // OSC: ESC ] ... (BEL or ESC \ terminator)
+            j := i + 2
+            for j < len(buf) {
+                if buf[j] == 0x07 { // BEL
+                    j++
+                    i = j
+                    goto next
+                }
+                if j+1 < len(buf) && buf[j] == 0x1B && buf[j+1] == '\\' {
+                    j += 2
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            return i // incomplete OSC
+        case 'P': // DCS: ESC P ... ESC \
+            j := i + 2
+            for j < len(buf) {
+                if j+1 < len(buf) && buf[j] == 0x1B && buf[j+1] == '\\' {
+                    j += 2
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            return i // incomplete DCS
+        case '7', '8', 'c', 'D', 'M', 'E':
+            // Single-char ESC sequences
+            i += 2
+        default:
+            if n >= 0x40 && n <= 0x7F {
+                // Two-char ESC <final>
+                i += 2
+            } else {
+                // Unknown/incomplete, carry ESC and beyond
+                return i
+            }
+        }
+    next:
+    }
+    return i
+}
+
+// normalizeCSISGRCase fixes sequences like ESC [ 37 M -> ESC [ 37 m (SGR)
+// when the parameters are digits/semicolons only. This guards against
+// accidental uppercase 'M' which ANSI interprets as DL (Delete Line).
+// normalizeCSISGRAny converts CSI sequences that look like SGR but end with 'M'
+// into proper 'm' (7-bit ESC[ form only). Do not touch 0x9B here since in
+// legacy charsets (PETSCII) 0x9B is also a color code before translation.
+func normalizeCSISGRAny(in []byte) []byte {
+    if len(in) < 3 {
+        return in
+    }
+    out := make([]byte, 0, len(in))
+    for i := 0; i < len(in); i++ {
+        b := in[i]
+        // 7-bit CSI form
+        if b == 0x1B && i+1 < len(in) && in[i+1] == '[' {
+            out = append(out, 0x1B, '[')
+            // Collect params
+            j := i + 2
+            for j < len(in) {
+                c := in[j]
+                if c >= 0x40 && c <= 0x7E {
+                    // Final byte
+                    if c == 'M' { // Uppercase M
+                        // Verify params are digits/semicolons only
+                        valid := true
+                        for k := i + 2; k < j; k++ {
+                            d := in[k]
+                            if !(d == ';' || (d >= '0' && d <= '9')) {
+                                valid = false
+                                break
+                            }
+                        }
+                        if valid {
+                            c = 'm'
+                        }
+                    } else if c == 'j' { // lowercase j -> J for ED
+                        // Treat as clear screen variants when digits/semicolons
+                        valid := true
+                        for k := i + 2; k < j; k++ {
+                            d := in[k]
+                            if !(d == ';' || (d >= '0' && d <= '9')) {
+                                valid = false
+                                break
+                            }
+                        }
+                        if valid {
+                            c = 'J'
+                        }
+                    }
+                    out = append(out, in[i+2:j]...)
+                    out = append(out, c)
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            // Incomplete CSI, copy the rest as-is and break
+            out = append(out, in[i+2:]...)
+            break
+        }
+        // Note: do not normalize 0x9B here.
+        out = append(out, b)
+    next:
+    }
+    return out
+}
+
 // buildNAWSSB constructs a NAWS SB with current fixed cols/rows
 func (c *Client) buildNAWSSB() []byte {
     const (
@@ -731,6 +1143,78 @@ func (c *Client) sendTelnetNAWS() {
     if conn != nil {
         _, _ = conn.Write(sb)
     }
+}
+
+// setCharsetAndAdjust sets charset and adjusts NAWS to a reasonable size.
+// PETSCII/ATASCII use 40x25; ANSI/CP437/UTF-8 use 80x25.
+func (c *Client) setCharsetAndAdjust(cs string) {
+    c.mu.Lock()
+    oldCols := c.termCols
+    oldRows := c.termRows
+    c.charset = cs
+    switch strings.ToUpper(cs) {
+    case "PETSCIIU", "PETSCIIL", "ATASCII":
+        c.termCols = 40
+        c.termRows = 25
+        // Enable preamble suppression for legacy charsets
+        c.preambleActive = true
+        if cap(c.preambleBuf) < 8192 {
+            c.preambleBuf = make([]byte, 0, 8192)
+        } else {
+            c.preambleBuf = c.preambleBuf[:0]
+        }
+        c.preambleStart = time.Now()
+    default:
+        if c.termCols < 80 {
+            c.termCols = 80
+        }
+        if c.termRows < 25 {
+            c.termRows = 25
+        }
+        // Disable preamble in ANSI/CP437
+        c.preambleActive = false
+        c.preambleBuf = c.preambleBuf[:0]
+    }
+    telnetConn := c.telnet
+    telnetNAWS := c.telnetNAWS
+    c.mu.Unlock()
+    if telnetConn != nil && telnetNAWS && (oldCols != c.termCols || oldRows != c.termRows) {
+        c.sendTelnetNAWS()
+    }
+}
+
+// shouldFlushLegacyPreamble decides when to flush buffered legacy preamble.
+// Flush triggers on PETSCII clear (0x93) or home (0x13), ATASCII FF (0x0C),
+// or a short timeout/size threshold.
+func (c *Client) shouldFlushLegacyPreamble(chunk []byte) bool {
+    if len(chunk) == 0 {
+        return false
+    }
+    cs := strings.ToUpper(c.charset)
+    // PETSCII: clear/home
+    if cs == "PETSCIIU" || cs == "PETSCIIL" {
+        for _, b := range chunk {
+            if b == 0x93 || b == 0x13 { // CLR or HOME
+                return true
+            }
+        }
+    }
+    // ATASCII: form feed (clear)
+    if cs == "ATASCII" {
+        for _, b := range chunk {
+            if b == 0x0C { // FF clear
+                return true
+            }
+        }
+    }
+    // Fallbacks: time/size
+    if time.Since(c.preambleStart) > 1500*time.Millisecond {
+        return true
+    }
+    if len(c.preambleBuf)+len(chunk) > 8192 {
+        return true
+    }
+    return false
 }
 
 // handleTerminalQueries detects DA/CPR requests in the data stream and replies
@@ -1060,20 +1544,85 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
             // Process ANSI normalization first
             processed := buffer[:n]
             if c.ansiEnhanced != nil {
-                processed = c.ansiEnhanced.ProcessANSIData(processed)
+                cs := strings.ToUpper(c.charset)
+                if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" && os.Getenv("ANSI_NORMALIZE") != "false" {
+                    processed = c.ansiEnhanced.ProcessANSIData(processed)
+                }
             }
             if os.Getenv("HEX_DUMP") == "true" {
                 c.debugHexDump("SSH->CLIENT", processed, 256)
             }
-            // Convert CP437 to UTF-8 if needed
+            // Legacy preamble suppression on SSH
+            csUp := strings.ToUpper(c.charset)
+            if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
+                c.preambleBuf = append(c.preambleBuf, processed...)
+                if c.shouldFlushLegacyPreamble(processed) {
+                    c.preambleActive = false
+                    processed = c.preambleBuf
+                    c.preambleBuf = c.preambleBuf[:0]
+                } else {
+                    continue
+                }
+            }
+            // No auto-detect/switching on SSH
+            // Convert charset-specific bytes to UTF-8 for browser rendering
             var outputData []byte
-            if c.charset == "CP437" {
+            bypassUsed := false
+            switch c.charset {
+            case "CP437":
                 utf8String := ConvertCP437ToUTF8Enhanced(processed)
                 outputData = []byte(utf8String)
-            } else {
+            case "PETSCIIU", "PETSCIIL", "ATASCII":
+                // Smart ASCII pass-through: check BEFORE control translation
+                // to avoid bypassing when there are PETSCII control codes
+                if shouldBypassLegacyMapping(processed) {
+                    // Even in bypass mode, translate control codes to ANSI
+                    processed = c.translateLegacyControls(processed)
+                    processed = normalizeCSISGRAny(processed)
+                    outputData = processed
+                    bypassUsed = true
+                } else {
+                    // Phase 2: translate PETSCII/ATASCII control bytes into ANSI
+                    processed = c.translateLegacyControls(processed)
+                    processed = normalizeCSISGRAny(processed)
+                    if c.charset == "PETSCIIU" {
+                        utf8String := ConvertPETSCIIUToUTF8(processed)
+                        outputData = []byte(utf8String)
+                    } else if c.charset == "PETSCIIL" {
+                        utf8String := ConvertPETSCIILToUTF8(processed)
+                        outputData = []byte(utf8String)
+                    } else {
+                        utf8String := ConvertATASCIIToUTF8(processed)
+                        outputData = []byte(utf8String)
+                    }
+                }
+            default:
                 outputData = processed
             }
 
+            if os.Getenv("HEX_DUMP") == "true" {
+                c.mu.Lock()
+                cols := c.termCols
+                rows := c.termRows
+                cs := c.charset
+                c.mu.Unlock()
+                log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
+                // Log the final bytes as the browser will see them
+                logBytes := outputData
+                if bytes.Contains(logBytes, []byte{0x1B, '['}) {
+                    logBytes = normalizeCSISGRAny(append([]byte(nil), logBytes...))
+                }
+                preview := string(logBytes)
+                if len(preview) > 120 {
+                    preview = preview[:120] + "…"
+                }
+                log.Printf("TEXT (final) %s: %q", cs, preview)
+            }
+
+            // Final output guard for SSH path as well
+            if bytes.Contains(outputData, []byte{0x1B, '['}) {
+                outputData = normalizeCSISGRAny(outputData)
+            }
             encoded := base64.StdEncoding.EncodeToString(outputData)
             c.sendJSON(Message{
                 Type:     "data",
@@ -1096,18 +1645,38 @@ func (c *Client) sendToRemote(data string) {
 
     var outputData []byte
 
-	// Handle backspace - xterm.js sends ASCII DEL (127) for backspace
-	// Most BBSes expect ASCII BS (8) instead
-	dataBytes := []byte(data)
-	for i, b := range dataBytes {
-		if b == 127 { // ASCII DEL
-			dataBytes[i] = 8 // ASCII BS
-		}
-	}
+    // Handle backspace - xterm.js sends ASCII DEL (127) for backspace
+    // Most BBSes expect ASCII BS (8) instead
+    dataBytes := []byte(data)
+    for i, b := range dataBytes {
+        if b == 127 { // ASCII DEL
+            dataBytes[i] = 8 // ASCII BS
+        }
+        // In PETSCII, delete-left is 0x14, map ASCII BS to that
+        if (c.charset == "PETSCIIU" || c.charset == "PETSCIIL") && dataBytes[i] == 8 {
+            dataBytes[i] = 0x14
+        }
+    }
 
-    if charset == "CP437" && telnetConn != nil {
-        // Convert UTF-8 input to CP437 for telnet connections
-        outputData = ConvertUTF8ToCP437Enhanced(string(dataBytes))
+    // Translate common ANSI cursor keys and controls to legacy equivalents
+    if c.charset == "PETSCIIU" || c.charset == "PETSCIIL" || c.charset == "ATASCII" {
+        dataBytes = translateANSIInputToLegacy(dataBytes, c.charset)
+    }
+
+    if telnetConn != nil {
+        switch charset {
+        case "CP437":
+            // Convert UTF-8 input to CP437 for telnet connections
+            outputData = ConvertUTF8ToCP437Enhanced(string(dataBytes))
+        case "PETSCIIU":
+            outputData = ConvertUTF8ToPETSCIIU(string(dataBytes))
+        case "PETSCIIL":
+            outputData = ConvertUTF8ToPETSCIIL(string(dataBytes))
+        case "ATASCII":
+            outputData = ConvertUTF8ToATASCII(string(dataBytes))
+        default:
+            outputData = dataBytes
+        }
     } else {
         outputData = dataBytes
     }
@@ -1117,6 +1686,97 @@ func (c *Client) sendToRemote(data string) {
     } else if sshIn != nil {
         _, _ = sshIn.Write(outputData)
     }
+}
+
+// translateANSIInputToLegacy maps ANSI cursor/clear sequences commonly emitted by browsers
+// to PETSCII/ATASCII control bytes expected by legacy BBS software.
+func translateANSIInputToLegacy(in []byte, charset string) []byte {
+    out := make([]byte, 0, len(in))
+    for i := 0; i < len(in); i++ {
+        b := in[i]
+        if b == 0x1B { // ESC
+            // Peek next
+            if i+1 < len(in) {
+                n := in[i+1]
+                // CSI sequences ESC [
+                if n == '[' {
+                    // Try to parse simple no-parameter sequences
+                    if i+2 < len(in) {
+                        final := in[i+2]
+                        mapped := false
+                        switch final {
+                        case 'A': // Up
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x91); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1C); mapped = true }
+                        case 'B': // Down
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x11); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1D); mapped = true }
+                        case 'C': // Right
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x1D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1F); mapped = true }
+                        case 'D': // Left
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x9D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1E); mapped = true }
+                        case 'H': // Home
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" {
+                                out = append(out, 0x13)
+                                mapped = true
+                            }
+                        case 'J': // Clear screen variants ESC[J or ESC[2J
+                            // detect optional '2' before 'J'
+                            if i+2 < len(in) && in[i+2] == '2' && i+3 < len(in) && in[i+3] == 'J' {
+                                if charset == "PETSCIIU" || charset == "PETSCIIL" {
+                                    out = append(out, 0x93)
+                                    mapped = true
+                                    i += 1 // consume extra char ('2') with 'J' handled below
+                                }
+                            } else {
+                                if charset == "PETSCIIU" || charset == "PETSCIIL" {
+                                    out = append(out, 0x93)
+                                    mapped = true
+                                }
+                            }
+                        }
+                        if mapped {
+                            // consume ESC [ X
+                            i += 2
+                            continue
+                        }
+
+                        // Try ESC [ n ~ sequences (e.g., Home/End from some keyboards)
+                        // Minimal handling: skip unknown CSI
+                    }
+                } else if n == 'O' { // SS3 sequences (ESC O A, etc.)
+                    if i+2 < len(in) {
+                        final := in[i+2]
+                        mapped := false
+                        switch final {
+                        case 'A': // Up
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x91); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1C); mapped = true }
+                        case 'B': // Down
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x11); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1D); mapped = true }
+                        case 'C': // Right
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x1D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1F); mapped = true }
+                        case 'D': // Left
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x9D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1E); mapped = true }
+                        case 'H': // Home
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x13); mapped = true }
+                        }
+                        if mapped {
+                            i += 2
+                            continue
+                        }
+                    }
+                }
+            }
+        }
+        out = append(out, b)
+    }
+    return out
 }
 
 // sendMessage is a convenience wrapper for emitting JSON messages.

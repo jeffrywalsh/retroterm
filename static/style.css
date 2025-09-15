@@ -13,6 +13,30 @@
 }
 
 /* Removed custom DOS/VGA font-face to use original system fonts */
+/* Legacy terminal font (optional): place a PETSCII-capable font at static/fonts/unifont.woff2 */
+@font-face {
+    font-family: 'RetroTermLegacy';
+    src: url('/fonts/unifont-17.0.01.otf') format('opentype');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+    unicode-range: U+0000-00FF, U+2500-259F, U+1FB00-1FBFF;
+}
+
+/* Optional SMP (Plane 1) coverage when split Unifont is used */
+@font-face {
+    font-family: 'RetroTermLegacy';
+    src: url('/fonts/unifont_upper-17.0.01.otf') format('opentype');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+    unicode-range: U+10000-1FFFF, U+1FB00-1FBFF;
+}
+
+/* Prefer legacy font in the terminal for PETSCII/ATASCII glyph coverage */
+#terminal-container, .xterm, .xterm-helpers {
+    font-family: 'RetroTermLegacy', 'Courier New', 'Courier', monospace !important;
+}
 
 * {
     margin: 0;

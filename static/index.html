@@ -33,11 +33,15 @@
                     <select id="charset" class="form-control" style="width:auto; padding: 0.25rem 0.5rem;">
                         <option value="CP437">MS-DOS CP437</option>
                         <option value="UTF-8">UTF-8</option>
+                        <option value="PETSCIIU">PETSCII (Upper/Graphics)</option>
+                        <option value="PETSCIIL">PETSCII (Lower/Uppercase)</option>
+                        <option value="ATASCII">ATASCII</option>
                     </select>
                 </div>
                 <div class="status-item">
                     <button id="reconnect-btn-header" class="btn btn-primary btn-small" style="display: none;" title="Reconnect to last BBS" aria-label="Reconnect to last BBS">Reconnect</button>
                     <button id="disconnect-btn-header" class="btn btn-danger btn-small" style="display: none;" title="Disconnect" aria-label="Disconnect">Disconnect</button>
+                    <button id="fake-connect-btn" class="btn btn-secondary btn-small" style="display: none;" title="Play captured test stream" aria-label="Fake Connect">Fake Connect</button>
                 </div>
                 <div class="status-item menu">
                     <button id="menu-button" class="btn-small menu-button" aria-haspopup="true" aria-expanded="false">Menu ▾</button>
@@ -99,6 +103,7 @@
                 <div class="form-group">
                     <label for="terminal-size">Terminal Size</label>
                     <select id="terminal-size" class="form-control">
+                        <option value="40x25">40×25 (C64/PETSCII)</option>
                         <option value="80x25">80×25 (Classic BBS)</option>
                         <option value="100x31">100×31 (Extended)</option>
                     </select>
