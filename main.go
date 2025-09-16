@@ -1124,31 +1124,40 @@ func normalizeCSISGRAny(in []byte) []byte {
                 c := in[j]
                 if c >= 0x40 && c <= 0x7E {
                     // Final byte
-                    if c == 'M' { // Uppercase M
-                        // Verify params are digits/semicolons only
-                        valid := true
-                        for k := i + 2; k < j; k++ {
-                            d := in[k]
-                            if !(d == ';' || (d >= '0' && d <= '9')) {
-                                valid = false
-                                break
+                    // Check if this is a private sequence (starts with ?)
+                    isPrivate := false
+                    if i+2 < len(in) && in[i+2] == '?' {
+                        isPrivate = true
+                    }
+
+                    // Only normalize non-private sequences
+                    if !isPrivate {
+                        if c == 'M' { // Uppercase M
+                            // Verify params are digits/semicolons only
+                            valid := true
+                            for k := i + 2; k < j; k++ {
+                                d := in[k]
+                                if !(d == ';' || (d >= '0' && d <= '9')) {
+                                    valid = false
+                                    break
+                                }
                             }
-                        }
-                        if valid {
-                            c = 'm'
-                        }
-                    } else if c == 'j' { // lowercase j -> J for ED
-                        // Treat as clear screen variants when digits/semicolons
-                        valid := true
-                        for k := i + 2; k < j; k++ {
-                            d := in[k]
-                            if !(d == ';' || (d >= '0' && d <= '9')) {
-                                valid = false
-                                break
+                            if valid {
+                                c = 'm'
                             }
-                        }
-                        if valid {
-                            c = 'J'
+                        } else if c == 'j' { // lowercase j -> J for ED
+                            // Treat as clear screen variants when digits/semicolons
+                            valid := true
+                            for k := i + 2; k < j; k++ {
+                                d := in[k]
+                                if !(d == ';' || (d >= '0' && d <= '9')) {
+                                    valid = false
+                                    break
+                                }
+                            }
+                            if valid {
+                                c = 'J'
+                            }
                         }
                     }
                     out = append(out, in[i+2:j]...)

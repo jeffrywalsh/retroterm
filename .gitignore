@@ -46,6 +46,9 @@
 !.github/workflows/
 !.github/workflows/ci.yml
 
+# Allow verification scripts
+!verify_ansi_fix.sh
+
 # By default, everything else remains ignored
 # Local debug artifacts
 *.log
