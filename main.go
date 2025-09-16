@@ -206,6 +206,7 @@ func setupRoutes(config *Config) {
 	// BBS Directory endpoints (public read)
 	http.HandleFunc("/api/bbs-directory", handleGetBBSDirectory)
 	http.HandleFunc("/api/import-bbs-guide", handleImportBBSGuide)
+	http.HandleFunc("/api/bbs-by-slug", handleGetBBSBySlug)
 
 	// 404 for any other /api/* paths
 	http.HandleFunc("/api/", func(w http.ResponseWriter, r *http.Request) {
@@ -214,8 +215,39 @@ func setupRoutes(config *Config) {
 		fmt.Fprintf(w, `{"success":false,"error":"not_found","path":"%s"}`, r.URL.Path)
 	})
 
-	// Static files
-	http.Handle("/", http.FileServer(http.Dir("./static")))
+	// Handle slug-based routing and static files
+	http.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Parse the path
+		path := r.URL.Path
+
+
+		// If it's root or has file extension, serve normally
+		if path == "/" || strings.Contains(path, ".") {
+			http.FileServer(http.Dir("./static")).ServeHTTP(w, r)
+			return
+		}
+
+		// Check if path might be a BBS slug (single segment, no extension)
+		pathParts := strings.Split(strings.Trim(path, "/"), "/")
+		if len(pathParts) == 1 && pathParts[0] != "" && !strings.Contains(pathParts[0], ".") {
+			// Potential BBS slug - check if it exists
+			slug := pathParts[0]
+
+			// Get BBS directory entries
+			entries, err := GetBBSDirectoryEntries()
+			if err == nil {
+				// Check if this slug corresponds to a BBS
+				if bbs := FindBBSBySlug(slug, entries); bbs != nil {
+					// Serve the index.html for the BBS quick link
+					http.ServeFile(w, r, "./static/index.html")
+					return
+				}
+			}
+		}
+
+		// Otherwise, try to serve as static file
+		http.FileServer(http.Dir("./static")).ServeHTTP(w, r)
+	}))
 }
 
 func handleWebSocket(w http.ResponseWriter, r *http.Request) {
