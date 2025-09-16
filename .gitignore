@@ -49,6 +49,11 @@
 # Allow verification scripts
 !verify_ansi_fix.sh
 
+# Allow references directory for documentation
+!references/
+!references/*.md
+!references/*.txt
+
 # By default, everything else remains ignored
 # Local debug artifacts
 *.log
