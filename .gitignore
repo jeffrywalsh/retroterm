@@ -20,6 +20,7 @@
 !go.sum
 !main.go
 !proxy.go
+!slug.go
 !zmodem_lrzsz.go
 
 # Allow the static directory itself, but only whitelist specific files inside
@@ -37,6 +38,16 @@
 !static/app.js
 !static/ansi-music.js
 !static/favicon.svg
+
+# Allow packaging directory and essential files
+!packaging/
+!packaging/build.sh
+!packaging/build-test.sh
+!packaging/VERSION
+!packaging/config.json.template
+!packaging/debian-template/
+!packaging/debian-template/**
+!packaging/nginx-test.conf
 
 # Allow GitHub Actions workflows
 !.github/
