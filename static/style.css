@@ -1161,5 +1161,69 @@ body.mobile-mode #terminal-container .terminal {
 .dirflat-table tbody tr { cursor: pointer; transition: background 0.2s; }
 .dirflat-table tbody tr:hover { background: rgba(255,255,255,0.05); }
 .dirflat-table td.addr { font-family: 'Courier New', monospace; color: var(--text-secondary); }
-.dirflat-table td.name { color: var(--text-primary); font-weight: 600; }
+.dirflat-table td.name { color: var(--text-primary); }
 .dirflat-table td.software { color: var(--text-secondary); }
+
+/* Quick link inline styling */
+.quick-link-wrapper {
+    position: relative;
+    display: inline-block;
+    margin-left: 0.5rem;
+}
+
+.quick-link-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.85rem;
+    padding: 0.1rem 0.3rem;
+    border-radius: 3px;
+    transition: all 0.2s;
+    opacity: 0.6;
+    vertical-align: middle;
+}
+
+.quick-link-btn:hover {
+    opacity: 1;
+    color: var(--accent-primary);
+    background: var(--bg-tertiary);
+}
+
+.quick-link-tooltip {
+    position: absolute;
+    bottom: 100%;
+    left: 50%;
+    transform: translateX(-50%) translateY(-5px);
+    background: var(--bg-tertiary);
+    color: var(--text-primary);
+    padding: 0.4rem 0.6rem;
+    border-radius: 6px;
+    font-size: 0.75rem;
+    white-space: nowrap;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s;
+    border: 1px solid var(--border-color);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+    z-index: 1000;
+}
+
+.quick-link-wrapper:hover .quick-link-tooltip {
+    opacity: 1;
+}
+
+.quick-link-tooltip::after {
+    content: '';
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border-width: 5px;
+    border-style: solid;
+    border-color: var(--bg-tertiary) transparent transparent transparent;
+}
+
+.bbs-name {
+    font-weight: 600;
+}
