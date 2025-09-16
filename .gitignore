@@ -11,6 +11,7 @@
 !api.go
 !bbs.csv
 !bbs_directory.go
+!capture_manager.go
 !config.go
 !config.json
 !cp437_enhanced.go
@@ -18,7 +19,9 @@
 !directory_handlers.go
 !go.mod
 !go.sum
+!legacy_processors.go
 !main.go
+!petscii_atascii.go
 !proxy.go
 !zmodem_lrzsz.go
 
