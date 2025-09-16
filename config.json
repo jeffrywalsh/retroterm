@@ -5,7 +5,7 @@
     "externalBaseURL": "https://retroterm.com"
   },
   "proxy": {
-    "enabled": true,
+    "enabled": false,
     "type": "tor",
     "host": "127.0.0.1",
     "port": 9050,
