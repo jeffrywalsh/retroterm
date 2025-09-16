@@ -7,6 +7,7 @@ package main
 import (
     "bytes"
     "encoding/base64"
+    "encoding/json"
     "fmt"
     "io"
     "log"
@@ -14,6 +15,7 @@ import (
     "net/http"
     neturl "net/url"
     "os"
+    "path/filepath"
     "strconv"
     "strings"
     "sync"
@@ -135,8 +137,9 @@ type Client struct {
     preambleStart  time.Time
 
     // Capture support
-    captureOn   bool
-    capturePath string
+    captureOn        bool
+    capturePath      string
+    forceLegacyFull  bool
 }
 
 // Global list of approved BBSes (loaded from both config and bbs.json)
@@ -547,7 +550,7 @@ func (c *Client) readTelnet() {
                     }
                 }
                 // Optional hex dump for diagnostics
-                if os.Getenv("HEX_DUMP") == "true" {
+                if hexLoggingEnabled() {
                     c.debugHexDump("TELNET->CLIENT", processedData, 256)
                 }
                 
@@ -578,7 +581,7 @@ func (c *Client) readTelnet() {
                 case "PETSCIIU", "PETSCIIL", "ATASCII":
                     // Smart ASCII pass-through: check BEFORE control translation
                     // to avoid bypassing when there are PETSCII control codes
-                    if shouldBypassLegacyMapping(processedData) {
+                    if !c.forceLegacyFull && shouldBypassLegacyMapping(processedData) {
                         // Even in bypass mode, translate control codes to ANSI
                         processedData = c.translateLegacyControls(processedData)
                         processedData = normalizeCSISGRAny(processedData)
@@ -603,7 +606,7 @@ func (c *Client) readTelnet() {
                     outputData = processedData
                 }
 
-                if os.Getenv("HEX_DUMP") == "true" {
+                if hexLoggingEnabled() {
                     c.mu.Lock()
                     cols := c.termCols
                     rows := c.termRows
@@ -642,22 +645,72 @@ func (c *Client) readTelnet() {
 	}
 }
 
-// playCapture replays a previously captured clean data stream (CAPTURE_FILE or capture.bin)
+// playCapture replays a previously captured clean data stream
 // through the same processing pipeline used for telnet data.
+// It supports both CAPTURE_FILE env var and enhanced captures with metadata.
 func (c *Client) playCapture() {
     path := os.Getenv("CAPTURE_FILE")
-    if path == "" { path = "capture.bin" }
+
+    // If no CAPTURE_FILE, try to find the latest capture in captures/ dir
+    if path == "" {
+        // Try to find the latest capture file
+        files, err := os.ReadDir("captures")
+        if err == nil && len(files) > 0 {
+            var latestCapture string
+            var latestTime time.Time
+            for _, file := range files {
+                if strings.HasSuffix(file.Name(), ".bin") {
+                    info, err := file.Info()
+                    if err == nil && info.ModTime().After(latestTime) {
+                        latestTime = info.ModTime()
+                        latestCapture = filepath.Join("captures", file.Name())
+                    }
+                }
+            }
+            if latestCapture != "" {
+                path = latestCapture
+                log.Printf("Playing latest capture: %s", path)
+
+                // Try to load metadata to set charset
+                metaPath := strings.TrimSuffix(path, ".bin") + ".json"
+                if metaData, err := os.ReadFile(metaPath); err == nil {
+                    var meta struct {
+                        Charset string `json:"charset"`
+                    }
+                    if err := json.Unmarshal(metaData, &meta); err == nil && meta.Charset != "" {
+                        c.charset = meta.Charset
+                        log.Printf("Set charset from metadata: %s", meta.Charset)
+                    }
+                }
+            }
+        }
+
+        // Fallback to capture.bin if no captures found
+        if path == "" {
+            path = "capture.bin"
+        }
+    }
+
     f, err := os.Open(path)
     if err != nil {
         c.sendMessage("error", fmt.Sprintf("Failed to open capture: %v", err))
         return
     }
     defer f.Close()
+
+    log.Printf("Playing capture from: %s (charset: %s)", path, c.charset)
+
+    prevForce := c.forceLegacyFull
+    c.forceLegacyFull = true
+    defer func() { c.forceLegacyFull = prevForce }()
+
     buf := make([]byte, 1024)
     for {
         n, err := f.Read(buf)
         if n > 0 {
-            c.processAndSendClean(buf[:n])
+            chunk := make([]byte, n)
+            copy(chunk, buf[:n])
+            c.processAndSendClean(chunk)
             time.Sleep(20 * time.Millisecond)
         }
         if err == io.EOF {
@@ -667,6 +720,8 @@ func (c *Client) playCapture() {
             break
         }
     }
+
+    log.Printf("Capture replay complete")
 }
 
 // processAndSendClean processes a "clean" (telnet-processed) byte slice through the
@@ -710,7 +765,7 @@ func (c *Client) processAndSendClean(cleanData []byte) {
         utf8String := ConvertCP437ToUTF8Enhanced(processedData)
         outputData = []byte(utf8String)
     case "PETSCIIU", "PETSCIIL", "ATASCII":
-        if shouldBypassLegacyMapping(processedData) {
+        if !c.forceLegacyFull && shouldBypassLegacyMapping(processedData) {
             processedData = c.translateLegacyControls(processedData)
             processedData = normalizeCSISGRAny(processedData)
             outputData = processedData
@@ -739,7 +794,11 @@ func (c *Client) processAndSendClean(cleanData []byte) {
         cs := c.charset
         c.mu.Unlock()
         log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
-        preview := string(outputData)
+        logBytes := outputData
+        if bytes.Contains(logBytes, []byte{0x1B, '['}) {
+            logBytes = normalizeCSISGRAny(append([]byte(nil), logBytes...))
+        }
+        preview := string(logBytes)
         if len(preview) > 120 { preview = preview[:120] + "…" }
         log.Printf("TEXT (final) %s: %q", cs, preview)
     }
@@ -1299,6 +1358,11 @@ func (c *Client) sendTelnet(b []byte) {
 }
 
 // debugHexDump logs up to max bytes of data with a simple hex+ASCII view
+// hexLoggingEnabled returns true if HEX_DUMP environment variable is set
+func hexLoggingEnabled() bool {
+    return os.Getenv("HEX_DUMP") == "true"
+}
+
 func (c *Client) debugHexDump(label string, data []byte, max int) {
     if len(data) == 0 {
         return
@@ -1575,7 +1639,7 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
             case "PETSCIIU", "PETSCIIL", "ATASCII":
                 // Smart ASCII pass-through: check BEFORE control translation
                 // to avoid bypassing when there are PETSCII control codes
-                if shouldBypassLegacyMapping(processed) {
+                if !c.forceLegacyFull && shouldBypassLegacyMapping(processed) {
                     // Even in bypass mode, translate control codes to ANSI
                     processed = c.translateLegacyControls(processed)
                     processed = normalizeCSISGRAny(processed)
