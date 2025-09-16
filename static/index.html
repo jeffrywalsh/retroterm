@@ -48,6 +48,7 @@
                     <div id="menu-dropdown" class="menu-dropdown" role="menu" aria-hidden="true">
                         <button id="browse-directory-btn" class="menu-item" role="menuitem">Directory</button>
                         <button id="open-settings-btn" class="menu-item" role="menuitem">Settings</button>
+                        <button id="open-replay-btn" class="menu-item" role="menuitem">Replay Capture</button>
                     </div>
                 </div>
             </div>
@@ -130,7 +131,24 @@
         </div>
     </div>
 
-    
+    <!-- Replay Capture Modal -->
+    <div id="replay-modal" class="modal" style="display:none;">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2>Replay Captured Sessions</h2>
+                <span class="modal-close">&times;</span>
+            </div>
+            <div class="modal-body">
+                <div id="replay-status" style="color: var(--text-secondary); margin-bottom: 1rem;"></div>
+                <div id="capture-list" style="max-height: 400px; overflow-y: auto;">
+                    <p style="color: var(--text-secondary);">Loading captures...</p>
+                </div>
+                <div style="margin-top: 1rem;">
+                    <button id="refresh-captures-btn" class="btn btn-secondary">Refresh List</button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
@@ -138,6 +156,7 @@
     <script src="zmodem.min.js"></script>
     <script src="zmodem-lib.js"></script>
     <script src="ansi-music.js"></script>
+    <script src="replay.js"></script>
     <script src="directory.js?v=4"></script>
     <script src="auth.js?v=5"></script>
     <script src="app.js?v=8"></script>

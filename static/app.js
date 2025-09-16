@@ -27,6 +27,9 @@ class BBSTerminal {
 
         // Expose debug helpers for hexdumps via console
         this.installDebugDumpHelpers();
+
+        // Auto-connect WebSocket for replay and other features
+        this.connectWebSocket();
     }
 
     // Minimal WS connect used for TEST_MODE Fake Connect (no telnet/ssh connect)
@@ -35,6 +38,7 @@ class BBSTerminal {
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
         this.ws = new WebSocket(wsUrl);
+        window.ws = this.ws; // Expose globally for replay functionality
         this.ws.onopen = () => {
             this.updateStatus('Connected', 'connected');
             this.terminal.writeln('\x1b[32mWebSocket connected (test mode)\x1b[0m');
@@ -397,6 +401,7 @@ class BBSTerminal {
         // Connect WebSocket
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        window.ws = this.ws; // Expose globally for replay functionality
 
         this.ws.onopen = () => {
             this.terminal.clear();
@@ -550,6 +555,20 @@ class BBSTerminal {
                         directoryManager.setConnectionStatus(false);
                     }
                     break;
+
+                case 'captureList':
+                    // Handle capture list for replay
+                    if (window.replayFunctions && window.replayFunctions.handleMessage) {
+                        window.replayFunctions.handleMessage(msg);
+                    }
+                    break;
+
+                case 'status':
+                    // Display status messages from replay
+                    if (msg.message) {
+                        this.updateStatus(msg.message, 'info');
+                    }
+                    break;
             }
         };
 
@@ -632,7 +651,8 @@ class BBSTerminal {
         const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
         
         this.ws = new WebSocket(wsUrl);
-        
+        window.ws = this.ws; // Expose globally for replay functionality
+
         this.ws.onopen = () => {
             if (window.DEBUG) console.log('WebSocket connected, sending connect command');
             this.terminal.clear();
@@ -1038,4 +1058,9 @@ class BBSTerminal {
 // Initialize when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     window.bbsTerminal = new BBSTerminal();
+
+    // Initialize replay functionality
+    if (window.replayFunctions && window.replayFunctions.init) {
+        window.replayFunctions.init();
+    }
 });
