@@ -432,7 +432,16 @@ func (c *Client) connectTelnet(host string, port int) {
 	c.telnet = conn
 	// Initialize Zmodem receiver (lrzsz-based) for telnet connections
 	c.zmodemReceiver = NewLrzszReceiver(c)
+	// Get charset for capture metadata
+	charset := c.charset
 	c.mu.Unlock()
+
+	// Start capture for debugging
+	if captureFile, err := captureManager.StartCapture(host, port, "telnet", charset); err == nil {
+		log.Printf("Started capture: %s", captureFile)
+	} else {
+		log.Printf("Failed to start capture: %v", err)
+	}
 
 	c.sendMessage("connected", fmt.Sprintf("Connected to %s", address))
 
@@ -465,6 +474,10 @@ func (c *Client) readTelnet() {
 			} else {
 				log.Printf("Telnet read error: %v", err)
 			}
+			// Stop capture on disconnect
+			if err := captureManager.StopCapture(); err != nil {
+				log.Printf("Failed to stop capture: %v", err)
+			}
 			c.sendJSON(Message{Type: "disconnected"})
 			c.disconnect()
 			return
@@ -473,6 +486,11 @@ func (c *Client) readTelnet() {
         if n > 0 {
             // Check for Zmodem in raw data FIRST (before telnet processing)
             rawData := buffer[:n]
+
+            // Write raw data to capture for debugging
+            if err := captureManager.WriteCapture(rawData); err != nil {
+                log.Printf("Capture write error: %v", err)
+            }
 
             // Debug logging removed
 
@@ -1897,8 +1915,11 @@ func (c *Client) disconnect() {
 	if c.zmodemReceiver != nil {
 		c.zmodemReceiver.Cancel()
 	}
-	
-    // Hex debugger removed
+
+    // Stop any active capture
+    if err := captureManager.StopCapture(); err != nil && err.Error() != "no active capture" {
+        log.Printf("Failed to stop capture on disconnect: %v", err)
+    }
 
 	if c.telnet != nil {
 		c.telnet.Close()
