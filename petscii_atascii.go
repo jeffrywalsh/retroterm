@@ -164,9 +164,15 @@ func ConvertPETSCIIUToUTF8(data []byte) string {
             }
             continue
         }
-        // Pass through common ASCII control characters
-        if b == 0x0D || b == 0x0A || b == 0x09 {
+        // Preserve ASCII control characters needed for terminal operations
+        // BS (0x08), TAB (0x09), LF (0x0A), CR (0x0D)
+        if b < 0x20 && (b == 0x08 || b == 0x09 || b == 0x0A || b == 0x0D) {
             runes = append(runes, rune(b))
+            continue
+        }
+        // Also preserve space (0x20) which is used in DELETE sequence
+        if b == 0x20 {
+            runes = append(runes, ' ')
             continue
         }
         r := petsciiUToUnicode[b]
@@ -198,9 +204,15 @@ func ConvertPETSCIILToUTF8(data []byte) string {
             }
             continue
         }
-        // Pass through common ASCII control characters
-        if b == 0x0D || b == 0x0A || b == 0x09 {
+        // Preserve ASCII control characters needed for terminal operations
+        // BS (0x08), TAB (0x09), LF (0x0A), CR (0x0D)
+        if b < 0x20 && (b == 0x08 || b == 0x09 || b == 0x0A || b == 0x0D) {
             runes = append(runes, rune(b))
+            continue
+        }
+        // Also preserve space (0x20) which is used in DELETE sequence
+        if b == 0x20 {
+            runes = append(runes, ' ')
             continue
         }
         r := petsciiLToUnicode[b]
