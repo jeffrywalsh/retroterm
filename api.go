@@ -48,3 +48,47 @@ func handleGetDefaultBBSList(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
+
+// handleGetBBSBySlug returns BBS information based on slug
+func handleGetBBSBySlug(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	// Extract slug from URL path
+	slug := r.URL.Query().Get("slug")
+	if slug == "" {
+		http.Error(w, "Missing slug parameter", http.StatusBadRequest)
+		return
+	}
+
+	// Get BBS directory entries
+	entries, err := GetBBSDirectoryEntries()
+	if err != nil {
+		http.Error(w, "Failed to load BBS directory", http.StatusInternalServerError)
+		return
+	}
+
+	// Find BBS by slug
+	bbs := FindBBSBySlug(slug, entries)
+	if bbs == nil {
+		http.Error(w, "BBS not found", http.StatusNotFound)
+		return
+	}
+
+	// Convert to BBSInfo format for client
+	bbsInfo := BBSInfo{
+		ID:          bbs.ID,
+		Name:        bbs.Name,
+		Host:        bbs.Host,
+		Port:        bbs.Port,
+		Protocol:    bbs.Protocol,
+		Description: bbs.Description,
+		Encoding:    bbs.Encoding,
+		Location:    bbs.Location,
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(bbsInfo)
+}
