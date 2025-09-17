@@ -39,15 +39,6 @@
 !static/ansi-music.js
 !static/favicon.svg
 
-# Allow packaging directory and essential files
-!packaging/
-!packaging/build.sh
-!packaging/build-test.sh
-!packaging/VERSION
-!packaging/config.json.template
-!packaging/debian-template/
-!packaging/debian-template/**
-!packaging/nginx-test.conf
 
 # Allow GitHub Actions workflows
 !.github/
