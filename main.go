@@ -370,15 +370,17 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				client.sendMessage("error", "Connection blocked: Host not in approved list")
 				continue
 			}
-            // Use charset from message, or from BBS entry if found
+            // Determine charset: message override > BBS entry > default CP437
             charsetToUse := msg.Charset
             if charsetToUse == "" && matchedBBS != nil && matchedBBS.Encoding != "" {
                 charsetToUse = matchedBBS.Encoding
                 log.Printf("Using charset from BBS entry: %s", charsetToUse)
             }
-            if charsetToUse != "" {
-                client.setCharsetAndAdjust(charsetToUse)
+            if charsetToUse == "" {
+                charsetToUse = "CP437" // Default to CP437
+                log.Printf("Using default charset: CP437")
             }
+            client.setCharsetAndAdjust(charsetToUse)
             if msg.Protocol == "telnet" {
                 go client.connectTelnet(msg.Host, msg.Port)
             } else if msg.Protocol == "ssh" {
@@ -441,10 +443,13 @@ func (c *Client) sendBBSList() {
 func (c *Client) connectToBBS(bbsID string) {
     for _, bbs := range ApprovedBBSList {
         if bbs.ID == bbsID {
-            // Set charset from BBS config if specified
-            if bbs.Encoding != "" {
-                c.charset = bbs.Encoding
+            // Set charset from BBS config, or default to CP437
+            charsetToUse := bbs.Encoding
+            if charsetToUse == "" {
+                charsetToUse = "CP437"
             }
+            c.setCharsetAndAdjust(charsetToUse)
+            log.Printf("Connecting to %s with charset: %s", bbs.Name, charsetToUse)
 			if bbs.Protocol == "telnet" {
 				go c.connectTelnet(bbs.Host, bbs.Port)
 			} else if bbs.Protocol == "ssh" {
