@@ -97,14 +97,10 @@ func (c *Client) translatePETSCIIToANSI(data []byte) []byte {
         case 0x92: // Reverse off
             out = append(out, 0x1B, '[', '2', '7', 'm')
             continue
-        // Return handling: map PETSCII CR to CRLF when lone CR (xterm needs LF to advance)
+        // Return handling: pass CR through as-is
+        // The BBS already sends proper CRLF sequences where needed
         case 0x0D:
-            // Each CR should create a new line - don't collapse multiple CRs
             out = append(out, '\r')
-            // If next byte is not LF, add LF so lines advance
-            if i+1 >= len(data) || data[i+1] != '\n' {
-                out = append(out, '\n')
-            }
             continue
         default:
             if sgr, ok := colorMap[b]; ok {
