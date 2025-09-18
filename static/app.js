@@ -1056,11 +1056,47 @@ class BBSTerminal {
 }
 
 // Initialize when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
     window.bbsTerminal = new BBSTerminal();
 
     // Initialize replay functionality
     if (window.replayFunctions && window.replayFunctions.init) {
         window.replayFunctions.init();
+    }
+
+    // Check for BBS slug in URL path
+    const path = window.location.pathname;
+    const pathParts = path.split('/').filter(part => part);
+
+    if (pathParts.length === 1 && pathParts[0] !== '') {
+        const slug = pathParts[0];
+
+        try {
+            // Fetch BBS info by slug
+            const response = await fetch(`/api/bbs-by-slug?slug=${encodeURIComponent(slug)}`);
+
+            if (response.ok) {
+                const bbs = await response.json();
+
+                // Auto-connect to the BBS once the terminal is ready
+                setTimeout(() => {
+                    window.bbsTerminal.connectToBBS(
+                        bbs.host,
+                        bbs.port || 23,
+                        bbs.protocol || 'telnet',
+                        '',  // username
+                        '',  // password
+                        bbs.encoding || 'CP437'
+                    );
+
+                    const currentBBSElement = document.getElementById('current-bbs');
+                    if (currentBBSElement) {
+                        currentBBSElement.textContent = bbs.name;
+                    }
+                }, 500);
+            }
+        } catch (error) {
+            console.error('Error fetching BBS by slug:', error);
+        }
     }
 });
