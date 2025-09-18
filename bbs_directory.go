@@ -29,6 +29,7 @@ type BBSEntry struct {
 	Software    string `json:"software"`
 	Active      bool   `json:"active"`
 	IsFavorite  bool   `json:"is_favorite,omitempty"`
+	Slug        string `json:"slug"`
 }
 
 // LoadBBSFromCSV loads BBS entries from a CSV file with header
@@ -136,6 +137,7 @@ func LoadBBSFromCSV(filename string) ([]BBSEntry, error) {
             Software:    software,
             Location:    location,
             Active:      true,
+            Slug:        GenerateSlug(name),
         }
 
         entries = append(entries, entry)

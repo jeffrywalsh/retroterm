@@ -117,7 +117,8 @@ async function loadBBSDirectory() {
             software: item.software || '',
             description: item.description || '',
             encoding: item.encoding || 'CP437',
-            location: item.location || ''
+            location: item.location || '',
+            slug: item.slug || ''
         }));
     } catch (error) {
         console.error('Failed to load BBS directory:', error);
@@ -132,8 +133,14 @@ function hydrateDirFlatFromDirectory() {
         software: b.software || '',
         location: b.location || '',
         address: `${b.host || ''}${b.port ? ':' + b.port : ''}`,
-        id: b.id
+        id: b.id,
+        slug: b.slug || ''
     }));
+    // Debug: Check if slugs are present
+    if (dirflatData.length > 0) {
+        console.log('First BBS in dirflatData:', dirflatData[0]);
+        console.log('Has slug:', !!dirflatData[0].slug);
+    }
 }
 
 function renderDirFlat(searchTerm = '') {
@@ -171,14 +178,25 @@ function renderDirFlat(searchTerm = '') {
         }
     });
     const favs = new Set(getFavorites());
-    const html = rows.map(r => {
+    const html = rows.map((r, idx) => {
         const isFav = favs.has(r.id);
         const star = isFav ? '★' : '☆';
         const starClass = isFav ? 'dirv2-fav active' : 'dirv2-fav';
+        const quickLinkUrl = r.slug ? `${window.location.origin}/${r.slug}` : '';
+        // Debug first row
+        if (idx === 0) {
+            console.log('Rendering first BBS:', r.name, 'slug:', r.slug, 'quickLinkUrl:', quickLinkUrl);
+        }
         return `
         <tr data-id="${r.id}">
             <td class="fav"><button class="${starClass}" data-id="${r.id}" title="Toggle favorite">${star}</button></td>
-            <td class="name">${escapeHtml(r.name)}</td>
+            <td class="name">
+                <span class="bbs-name">${escapeHtml(r.name)}</span>
+                ${r.slug ? `<span class="quick-link-wrapper">
+                    <button class="quick-link-btn" data-slug="${escapeHtml(r.slug)}" title="Copy quick link: ${quickLinkUrl}">🔗</button>
+                    <span class="quick-link-tooltip">${quickLinkUrl}</span>
+                </span>` : ''}
+            </td>
             <td class="location">${escapeHtml(r.location || '')}</td>
             <td class="software">${escapeHtml(r.software || '')}</td>
             <td class="addr">${escapeHtml(r.address)}</td>
@@ -210,6 +228,40 @@ function renderDirFlat(searchTerm = '') {
             // Re-render to update stars and disabled state
             const term = (document.getElementById('directory-search')?.value || '').toLowerCase();
             renderDirFlat(term);
+        });
+    });
+
+    // Quick link button click copies URL
+    Array.from(tbody.querySelectorAll('.quick-link-btn')).forEach(btn => {
+        btn.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            const slug = btn.getAttribute('data-slug');
+            if (!slug) return;
+
+            const url = `${window.location.origin}/${slug}`;
+
+            try {
+                await navigator.clipboard.writeText(url);
+                btn.textContent = '✓';
+                btn.title = 'Copied!';
+                setTimeout(() => {
+                    btn.textContent = '📋';
+                    btn.title = 'Copy quick link';
+                }, 2000);
+            } catch (err) {
+                console.error('Failed to copy:', err);
+                // Fallback for older browsers
+                const textarea = document.createElement('textarea');
+                textarea.value = url;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                btn.textContent = '✓';
+                setTimeout(() => {
+                    btn.textContent = '📋';
+                }, 2000);
+            }
         });
     });
 }
