@@ -350,12 +350,15 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					log.Printf("SECURITY: failed to refresh approved list: %v", err)
 				}
 			}
-			for _, bbs := range ApprovedBBSList {
+			var matchedBBS *BBSInfo
+			for i := range ApprovedBBSList {
+				bbs := &ApprovedBBSList[i]
 				// Case-insensitive host comparison and exact port/protocol match
 				if strings.EqualFold(bbs.Host, msg.Host) &&
 					bbs.Port == msg.Port &&
 					strings.EqualFold(bbs.Protocol, msg.Protocol) {
 					isApproved = true
+					matchedBBS = bbs
 					log.Printf("SECURITY: Approved connection to %s://%s:%d", msg.Protocol, msg.Host, msg.Port)
 					break
 				}
@@ -367,8 +370,14 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				client.sendMessage("error", "Connection blocked: Host not in approved list")
 				continue
 			}
-            if msg.Charset != "" {
-                client.setCharsetAndAdjust(msg.Charset)
+            // Use charset from message, or from BBS entry if found
+            charsetToUse := msg.Charset
+            if charsetToUse == "" && matchedBBS != nil && matchedBBS.Encoding != "" {
+                charsetToUse = matchedBBS.Encoding
+                log.Printf("Using charset from BBS entry: %s", charsetToUse)
+            }
+            if charsetToUse != "" {
+                client.setCharsetAndAdjust(charsetToUse)
             }
             if msg.Protocol == "telnet" {
                 go client.connectTelnet(msg.Host, msg.Port)
@@ -628,6 +637,9 @@ func (c *Client) readTelnet() {
                 case "CP437":
                     utf8String := ConvertCP437ToUTF8Enhanced(processedData)
                     outputData = []byte(utf8String)
+                case "CP866":
+                    utf8String := ConvertCP866ToUTF8(processedData)
+                    outputData = []byte(utf8String)
                 case "PETSCIIU", "PETSCIIL", "ATASCII":
                     // Smart ASCII pass-through: check BEFORE control translation
                     // to avoid bypassing when there are PETSCII control codes
@@ -813,6 +825,9 @@ func (c *Client) processAndSendClean(cleanData []byte) {
     switch c.charset {
     case "CP437":
         utf8String := ConvertCP437ToUTF8Enhanced(processedData)
+        outputData = []byte(utf8String)
+    case "CP866":
+        utf8String := ConvertCP866ToUTF8(processedData)
         outputData = []byte(utf8String)
     case "PETSCIIU", "PETSCIIL", "ATASCII":
         if !c.forceLegacyFull && shouldBypassLegacyMapping(processedData) {
@@ -1264,7 +1279,7 @@ func (c *Client) sendTelnetNAWS() {
 }
 
 // setCharsetAndAdjust sets charset and adjusts NAWS to a reasonable size.
-// PETSCII/ATASCII use 40x25; ANSI/CP437/UTF-8 use 80x25.
+// PETSCII/ATASCII use 40x25; ANSI/CP437/CP866/UTF-8 use 80x25.
 func (c *Client) setCharsetAndAdjust(cs string) {
     c.mu.Lock()
     oldCols := c.termCols
@@ -1695,6 +1710,9 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
             case "CP437":
                 utf8String := ConvertCP437ToUTF8Enhanced(processed)
                 outputData = []byte(utf8String)
+            case "CP866":
+                utf8String := ConvertCP866ToUTF8(processed)
+                outputData = []byte(utf8String)
             case "PETSCIIU", "PETSCIIL", "ATASCII":
                 // Smart ASCII pass-through: check BEFORE control translation
                 // to avoid bypassing when there are PETSCII control codes
@@ -1791,6 +1809,9 @@ func (c *Client) sendToRemote(data string) {
         case "CP437":
             // Convert UTF-8 input to CP437 for telnet connections
             outputData = ConvertUTF8ToCP437Enhanced(string(dataBytes))
+        case "CP866":
+            // Convert UTF-8 input to CP866 for telnet connections
+            outputData = ConvertUTF8ToCP866(string(dataBytes))
         case "PETSCIIU":
             outputData = ConvertUTF8ToPETSCIIU(string(dataBytes))
         case "PETSCIIL":
