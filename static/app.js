@@ -406,7 +406,7 @@ class BBSTerminal {
         this.ws.onopen = () => {
             this.terminal.clear();
             this.terminal.writeln(`\x1b[33mConnecting to ${protocol}://${host}:${port}...\x1b[0m`);
-            this.terminal.writeln(`\x1b[36mCharacter encoding: ${charset}\x1b[0m`);
+            // Charset is determined by server based on BBS configuration
             
             // Initialize Zmodem if available
             if (typeof ZmodemIntegration !== 'undefined') {
@@ -657,7 +657,6 @@ class BBSTerminal {
             if (window.DEBUG) console.log('WebSocket connected, sending connect command');
             this.terminal.clear();
             this.terminal.writeln(`\x1b[33mConnecting to ${protocol}://${host}:${port}...\x1b[0m`);
-            this.terminal.writeln(`\x1b[36mCharacter encoding: ${charset}\x1b[0m`);
             // Fresh decoder per connection
             this.decoder = new TextDecoder('utf-8');
             // lastConnection and button already set above
@@ -696,10 +695,9 @@ class BBSTerminal {
             this.terminal.writeln('\x1b[33mNo previous connection to reconnect.\x1b[0m');
             return;
         }
-        const charsetEl = document.getElementById('charset');
-        const charset = (charsetEl && charsetEl.value) ? charsetEl.value : this.lastConnection.charset || 'CP437';
+        // Let server determine charset based on BBS
         const { host, port, protocol, username, password } = this.lastConnection;
-        this.directConnect(host, port, protocol || 'telnet', username || '', password || '', charset);
+        this.directConnect(host, port, protocol || 'telnet', username || '', password || '', '');
     }
 
     disconnect() {
