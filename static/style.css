@@ -33,9 +33,10 @@
     unicode-range: U+10000-1FFFF, U+1FB00-1FBFF;
 }
 
-/* Prefer legacy font in the terminal for PETSCII/ATASCII glyph coverage */
+/* Use consistent monospace font for proper character alignment */
 #terminal-container, .xterm, .xterm-helpers {
-    font-family: 'RetroTermLegacy', 'Courier New', 'Courier', monospace !important;
+    font-family: 'Courier New', 'Courier', monospace !important;
+    font-weight: normal !important;
 }
 
 * {
@@ -581,6 +582,8 @@ body.mobile-mode #terminal-container .terminal {
 .xterm {
     font-family: 'Courier New', 'Courier', monospace !important;
     font-variant-ligatures: none;
+    font-weight: normal !important;
+    line-height: 1.2 !important;
 }
 
 .xterm-viewport {
@@ -589,6 +592,15 @@ body.mobile-mode #terminal-container .terminal {
 
 .xterm-screen {
     background-color: #000 !important;
+}
+
+/* Ensure no bold or font-weight variations in terminal */
+.xterm .xterm-bold {
+    font-weight: normal !important;
+}
+
+.xterm span {
+    font-weight: normal !important;
 }
 
 /* Scrollbar */
