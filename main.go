@@ -374,11 +374,11 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
             charsetToUse := msg.Charset
             if charsetToUse == "" && matchedBBS != nil && matchedBBS.Encoding != "" {
                 charsetToUse = matchedBBS.Encoding
-                log.Printf("Using charset from BBS entry: %s", charsetToUse)
+                // log.Printf("Using charset from BBS entry: %s", charsetToUse)
             }
             if charsetToUse == "" {
                 charsetToUse = "CP437" // Default to CP437
-                log.Printf("Using default charset: CP437")
+                // log.Printf("Using default charset: CP437")
             }
             client.setCharsetAndAdjust(charsetToUse)
             if msg.Protocol == "telnet" {
@@ -449,7 +449,7 @@ func (c *Client) connectToBBS(bbsID string) {
                 charsetToUse = "CP437"
             }
             c.setCharsetAndAdjust(charsetToUse)
-            log.Printf("Connecting to %s with charset: %s", bbs.Name, charsetToUse)
+            // log.Printf("Connecting to %s with charset: %s", bbs.Name, charsetToUse)
 			if bbs.Protocol == "telnet" {
 				go c.connectTelnet(bbs.Host, bbs.Port)
 			} else if bbs.Protocol == "ssh" {
@@ -478,16 +478,15 @@ func (c *Client) connectTelnet(host string, port int) {
 	c.telnet = conn
 	// Initialize Zmodem receiver (lrzsz-based) for telnet connections
 	c.zmodemReceiver = NewLrzszReceiver(c)
-	// Get charset for capture metadata
-	charset := c.charset
 	c.mu.Unlock()
 
-	// Start capture for debugging
-	if captureFile, err := captureManager.StartCapture(host, port, "telnet", charset); err == nil {
-		log.Printf("Started capture: %s", captureFile)
-	} else {
-		log.Printf("Failed to start capture: %v", err)
-	}
+	// Capture disabled for production
+	// charset := c.charset
+	// if captureFile, err := captureManager.StartCapture(host, port, "telnet", charset); err == nil {
+	// 	log.Printf("Started capture: %s", captureFile)
+	// } else {
+	// 	log.Printf("Failed to start capture: %v", err)
+	// }
 
 	c.sendMessage("connected", fmt.Sprintf("Connected to %s", address))
 
@@ -520,10 +519,10 @@ func (c *Client) readTelnet() {
 			} else {
 				log.Printf("Telnet read error: %v", err)
 			}
-			// Stop capture on disconnect
-			if err := captureManager.StopCapture(); err != nil {
-				log.Printf("Failed to stop capture: %v", err)
-			}
+			// Capture disabled for production
+			// if err := captureManager.StopCapture(); err != nil {
+			// 	log.Printf("Failed to stop capture: %v", err)
+			// }
 			c.sendJSON(Message{Type: "disconnected"})
 			c.disconnect()
 			return
@@ -533,10 +532,10 @@ func (c *Client) readTelnet() {
             // Check for Zmodem in raw data FIRST (before telnet processing)
             rawData := buffer[:n]
 
-            // Write raw data to capture for debugging
-            if err := captureManager.WriteCapture(rawData); err != nil {
-                log.Printf("Capture write error: %v", err)
-            }
+            // Capture disabled for production
+            // if err := captureManager.WriteCapture(rawData); err != nil {
+            //     log.Printf("Capture write error: %v", err)
+            // }
 
             // Debug logging removed
 
@@ -615,7 +614,7 @@ func (c *Client) readTelnet() {
                 }
                 // Optional hex dump for diagnostics
                 if hexLoggingEnabled() {
-                    c.debugHexDump("TELNET->CLIENT", processedData, 256)
+                    // c.debugHexDump("TELNET->CLIENT", processedData, 256)
                 }
                 
                 // Legacy preamble suppression: buffer until clear/home or timeout
@@ -637,7 +636,7 @@ func (c *Client) readTelnet() {
 
                 // Convert charset-specific bytes to UTF-8 for browser rendering
                 var outputData []byte
-                bypassUsed := false
+                // bypassUsed := false
                 switch c.charset {
                 case "CP437":
                     utf8String := ConvertCP437ToUTF8Enhanced(processedData)
@@ -653,7 +652,7 @@ func (c *Client) readTelnet() {
                         processedData = c.translateLegacyControls(processedData)
                         processedData = normalizeCSISGRAny(processedData)
                         outputData = processedData
-                        bypassUsed = true
+                        // bypassUsed = true
                     } else {
                         // Phase 2: translate PETSCII/ATASCII control bytes into ANSI
                         processedData = c.translateLegacyControls(processedData)
@@ -675,11 +674,11 @@ func (c *Client) readTelnet() {
 
                 if hexLoggingEnabled() {
                     c.mu.Lock()
-                    cols := c.termCols
-                    rows := c.termRows
+                    // cols := c.termCols
+                    // rows := c.termRows
                     cs := c.charset
                     c.mu.Unlock()
-                    log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
+                    // log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
                     // Log the final bytes as the browser will see them
                     logBytes := outputData
                     if bytes.Contains(logBytes, []byte{0x1B, '['}) {
@@ -1693,7 +1692,7 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
                 }
             }
             if os.Getenv("HEX_DUMP") == "true" {
-                c.debugHexDump("SSH->CLIENT", processed, 256)
+                // c.debugHexDump("SSH->CLIENT", processed, 256)
             }
             // Legacy preamble suppression on SSH
             csUp := strings.ToUpper(c.charset)
@@ -1974,10 +1973,10 @@ func (c *Client) disconnect() {
 		c.zmodemReceiver.Cancel()
 	}
 
-    // Stop any active capture
-    if err := captureManager.StopCapture(); err != nil && err.Error() != "no active capture" {
-        log.Printf("Failed to stop capture on disconnect: %v", err)
-    }
+    // Capture disabled for production
+    // if err := captureManager.StopCapture(); err != nil && err.Error() != "no active capture" {
+    //     log.Printf("Failed to stop capture on disconnect: %v", err)
+    // }
 
 	if c.telnet != nil {
 		c.telnet.Close()
