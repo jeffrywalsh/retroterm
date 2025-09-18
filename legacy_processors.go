@@ -99,10 +99,7 @@ func (c *Client) translatePETSCIIToANSI(data []byte) []byte {
             continue
         // Return handling: map PETSCII CR to CRLF when lone CR (xterm needs LF to advance)
         case 0x0D:
-            // Skip all consecutive CRs first, keeping only the first one
-            for i+1 < len(data) && data[i+1] == 0x0D {
-                i++
-            }
+            // Each CR should create a new line - don't collapse multiple CRs
             out = append(out, '\r')
             // If next byte is not LF, add LF so lines advance
             if i+1 >= len(data) || data[i+1] != '\n' {
