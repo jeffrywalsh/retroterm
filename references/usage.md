@@ -2,7 +2,7 @@ Usage and Debug Notes
 ---------------------
 
 Run (typical)
-- HEX_DUMP=true go run .
+- HEX_DUMP=true go run ./src
 - Optional: ANSI_DEBUG=true for extra ANSI processor logs.
 
 Encoding
@@ -35,7 +35,7 @@ Environment flags (summary)
 - TERM_ANSWERS=true — enable answers to terminal queries (CPR/DA)
 
 Quick repro steps (2 minutes)
-1) Start server: HEX_DUMP=true go run .
+1) Start server: HEX_DUMP=true go run ./src
 2) Open UI, set Encoding to PETSCIIL (or PETSCIIU), connect to target BBS.
 3) Watch logs for:
    - TEXT (final): uses lowercase 'm' in SGR, 'J' in clears.
@@ -44,10 +44,10 @@ Quick repro steps (2 minutes)
 
 Optional: Capture/Playback (dev only, behind flags)
 - To capture the clean stream (post telnet negotiations):
-  - CAPTURE_RAW=true CAPTURE_TRUNCATE=true CAPTURE_FILE=capture.bin HEX_DUMP=true go run .
+  - CAPTURE_RAW=true CAPTURE_TRUNCATE=true CAPTURE_FILE=capture.bin HEX_DUMP=true go run ./src
   - Connect and navigate to the problematic screen; capture.bin will be written.
 - To replay in TEST_MODE (if enabled in this build):
-  - TEST_MODE=true HEX_DUMP=true go run .
+  - TEST_MODE=true HEX_DUMP=true go run ./src
   - Click “Fake Connect” in the header to replay capture.bin.
   - Note: This is for development only; core flow does not depend on playback.
 

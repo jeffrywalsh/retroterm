@@ -38,10 +38,8 @@ class BBSTerminal {
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
         this.ws = new WebSocket(wsUrl);
-        window.ws = this.ws; // Expose globally for replay functionality
         this.ws.onopen = () => {
             this.updateStatus('Connected', 'connected');
-            this.terminal.writeln('\x1b[32mWebSocket connected (test mode)\x1b[0m');
             // Initialize Zmodem if available (harmless; may do nothing)
             if (typeof ZmodemIntegration !== 'undefined') {
                 try {
@@ -124,7 +122,6 @@ class BBSTerminal {
             }
             const hex = codes.join(' ');
             const out = { row, text, hex };
-            console.log('dumpLine', out);
             return out;
         };
 
@@ -157,7 +154,6 @@ class BBSTerminal {
                 }
                 lines.push({ row: ry, text: text.join(''), hex: hex.join(' ') });
             }
-            console.log('dumpRegion', { r1, c1, r2, c2, lines });
             return { r1, c1, r2, c2, lines };
         };
     }
@@ -215,7 +211,6 @@ class BBSTerminal {
             const webglAddon = new WebglAddon.WebglAddon();
             this.terminal.loadAddon(webglAddon);
         } catch (e) {
-            if (window.DEBUG) console.log('WebGL not available, using canvas renderer');
         }
 
         // FitAddon for responsive/mobile fitting
@@ -223,7 +218,6 @@ class BBSTerminal {
             this.fitAddon = new FitAddon.FitAddon();
             this.terminal.loadAddon(this.fitAddon);
         } catch (e) {
-            if (window.DEBUG) console.warn('FitAddon not available');
         }
 
         this.terminal.writeln('\x1b[1;32mRetroTerm Ready\x1b[0m');
@@ -401,7 +395,6 @@ class BBSTerminal {
         // Connect WebSocket
         const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         this.ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
-        window.ws = this.ws; // Expose globally for replay functionality
 
         this.ws.onopen = () => {
             this.terminal.clear();
@@ -413,13 +406,10 @@ class BBSTerminal {
                 try {
                     this.zmodem = new ZmodemIntegration(this.terminal, this.ws);
                     this.terminal.writeln(`\x1b[32mZmodem file transfer enabled\x1b[0m`);
-                    console.log('Zmodem initialized successfully');
                 } catch (e) {
-                    console.error('Zmodem init failed:', e);
                     this.terminal.writeln(`\x1b[31mZmodem initialization failed\x1b[0m`);
                 }
             } else {
-                if (window.DEBUG) console.warn('ZmodemIntegration not found - Zmodem disabled');
                 this.terminal.writeln(`\x1b[33mZmodem file transfer not available\x1b[0m`);
             }
             
@@ -527,7 +517,6 @@ class BBSTerminal {
                 
                 case 'fileDownload':
                     // Complete file download from server
-                    if (window.DEBUG) console.log('Received fileDownload message for:', msg.message);
                     this.completeDownload(msg.message, msg.data);
                     break;
                     
@@ -556,15 +545,9 @@ class BBSTerminal {
                     }
                     break;
 
-                case 'captureList':
-                    // Handle capture list for replay
-                    if (window.replayFunctions && window.replayFunctions.handleMessage) {
-                        window.replayFunctions.handleMessage(msg);
-                    }
-                    break;
 
                 case 'status':
-                    // Display status messages from replay
+                    // Display status messages
                     if (msg.message) {
                         this.updateStatus(msg.message, 'info');
                     }
@@ -616,7 +599,6 @@ class BBSTerminal {
 
     // Direct connection method that doesn't require form elements
     directConnect(host, port, protocol = 'telnet', username = '', password = '', charset = 'CP437') {
-        if (window.DEBUG) console.log('directConnect called:', { host, port, protocol, charset });
         
         if (!host || !port) {
             this.terminal.writeln('\x1b[31mError: Host and port are required\x1b[0m');
@@ -651,10 +633,8 @@ class BBSTerminal {
         const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
         
         this.ws = new WebSocket(wsUrl);
-        window.ws = this.ws; // Expose globally for replay functionality
 
         this.ws.onopen = () => {
-            if (window.DEBUG) console.log('WebSocket connected, sending connect command');
             this.terminal.clear();
             this.terminal.writeln(`\x1b[33mConnecting to ${protocol}://${host}:${port}...\x1b[0m`);
             // Fresh decoder per connection
@@ -666,13 +646,10 @@ class BBSTerminal {
                 try {
                     this.zmodem = new ZmodemIntegration(this.terminal, this.ws);
                     this.terminal.writeln(`\x1b[32mZmodem file transfer enabled\x1b[0m`);
-                    if (window.DEBUG) console.log('Zmodem initialized successfully');
                 } catch (e) {
-                    console.error('Zmodem init failed:', e);
                     this.terminal.writeln(`\x1b[31mZmodem initialization failed\x1b[0m`);
                 }
             } else {
-                if (window.DEBUG) console.warn('ZmodemIntegration not found - Zmodem disabled');
                 this.terminal.writeln(`\x1b[33mZmodem file transfer not available\x1b[0m`);
             }
             
@@ -701,7 +678,6 @@ class BBSTerminal {
     }
 
     disconnect() {
-        if (window.DEBUG) console.log('Disconnect called - current status:', this.isConnected);
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ type: 'disconnect' }));
             this.ws.close();
@@ -723,7 +699,6 @@ class BBSTerminal {
         if (typeof directoryManager !== 'undefined') {
             directoryManager.setConnectionStatus(false);
         }
-        if (window.DEBUG) console.log('Disconnect complete - new status:', this.isConnected);
     }
 
     resizeTerminal(cols, rows) {
@@ -881,7 +856,6 @@ class BBSTerminal {
                 }
             }
         } catch (e) {
-            if (window.DEBUG) console.warn('Fit failed', e);
         }
     }
 
@@ -1057,10 +1031,6 @@ class BBSTerminal {
 document.addEventListener('DOMContentLoaded', async () => {
     window.bbsTerminal = new BBSTerminal();
 
-    // Initialize replay functionality
-    if (window.replayFunctions && window.replayFunctions.init) {
-        window.replayFunctions.init();
-    }
 
     // Check for BBS slug in URL path
     const path = window.location.pathname;
