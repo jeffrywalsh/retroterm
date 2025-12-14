@@ -7,7 +7,6 @@ package main
 import (
     "bytes"
     "encoding/base64"
-    "encoding/json"
     "fmt"
     "io"
     "log"
@@ -15,7 +14,6 @@ import (
     "net/http"
     neturl "net/url"
     "os"
-    "path/filepath"
     "strconv"
     "strings"
     "sync"
@@ -136,10 +134,6 @@ type Client struct {
     preambleBuf    []byte
     preambleStart  time.Time
 
-    // Capture support
-    captureOn        bool
-    capturePath      string
-    forceLegacyFull  bool
 }
 
 // Global list of approved BBSes (loaded from both config and bbs.json)
@@ -281,29 +275,17 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-    // Check for debug mode from environment
-    debugMode := os.Getenv("ANSI_DEBUG") == "true"
     
     client := &Client{
         ws:           conn,
         done:         make(chan bool),
         charset:      "CP437",
-        ansiEnhanced: NewANSIEnhancedProcessor(debugMode),
+        ansiEnhanced: NewANSIEnhancedProcessor(false),
         termCols:     80,
         termRows:     25,
         cursorRow:    1,
         cursorCol:    1,
         cursorSeqBuf: make([]byte, 0, 64),
-    }
-    // Enable raw capture if requested (writes to CAPTURE_FILE or capture.bin)
-    if os.Getenv("CAPTURE_RAW") == "true" {
-        client.captureOn = true
-        client.capturePath = os.Getenv("CAPTURE_FILE")
-        if client.capturePath == "" { client.capturePath = "capture.bin" }
-        // Truncate on new session if CAPTURE_TRUNCATE=true
-        if os.Getenv("CAPTURE_TRUNCATE") == "true" {
-            _ = os.WriteFile(client.capturePath, nil, 0644)
-        }
     }
     // Music emitter sends a JSON message to the client; keep simple payload
     client.music = NewAnsiMusicProcessor(func(payload string) {
@@ -417,8 +399,6 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
             // SECURITY: This message type only uses pre-approved BBS IDs
             log.Printf("SECURITY: BBS connection via ID: %s", msg.BBSID)
             client.connectToBBS(msg.BBSID)
-        case "playCapture":
-            go client.playCapture()
         case "cancelDownload":
             if client.zmodemReceiver != nil {
                 client.zmodemReceiver.Cancel()
@@ -480,13 +460,6 @@ func (c *Client) connectTelnet(host string, port int) {
 	c.zmodemReceiver = NewLrzszReceiver(c)
 	c.mu.Unlock()
 
-	// Capture disabled for production
-	// charset := c.charset
-	// if captureFile, err := captureManager.StartCapture(host, port, "telnet", charset); err == nil {
-	// 	log.Printf("Started capture: %s", captureFile)
-	// } else {
-	// 	log.Printf("Failed to start capture: %v", err)
-	// }
 
 	c.sendMessage("connected", fmt.Sprintf("Connected to %s", address))
 
@@ -519,10 +492,6 @@ func (c *Client) readTelnet() {
 			} else {
 				log.Printf("Telnet read error: %v", err)
 			}
-			// Capture disabled for production
-			// if err := captureManager.StopCapture(); err != nil {
-			// 	log.Printf("Failed to stop capture: %v", err)
-			// }
 			c.sendJSON(Message{Type: "disconnected"})
 			c.disconnect()
 			return
@@ -532,12 +501,6 @@ func (c *Client) readTelnet() {
             // Check for Zmodem in raw data FIRST (before telnet processing)
             rawData := buffer[:n]
 
-            // Capture disabled for production
-            // if err := captureManager.WriteCapture(rawData); err != nil {
-            //     log.Printf("Capture write error: %v", err)
-            // }
-
-            // Debug logging removed
 
 			// Pre-suppress terminal output on first ZMODEM signature before receiver activates
 			if c.hasZmodemSignature(rawData) && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) {
@@ -587,13 +550,6 @@ func (c *Client) readTelnet() {
 
             // Only send to terminal if not in active ZMODEM transfer and not in pre-suppression window
             if len(cleanData) > 0 && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) && !c.suppressZmodem {
-                // Optionally capture the stream for testing
-                if c.captureOn {
-                    if f, err := os.OpenFile(c.capturePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644); err == nil {
-                        _, _ = f.Write(cleanData)
-                        _ = f.Close()
-                    }
-                }
                 // ANSI Music: detect and emit events, suppressing music sequences
                 if c.music != nil {
                     if remaining, consumed := c.music.Process(cleanData); consumed {
@@ -612,10 +568,6 @@ func (c *Client) readTelnet() {
                         processedData = c.ansiEnhanced.ProcessANSIData(cleanData)
                     }
                 }
-                // Optional hex dump for diagnostics
-                if hexLoggingEnabled() {
-                    // c.debugHexDump("TELNET->CLIENT", processedData, 256)
-                }
                 
                 // Legacy preamble suppression: buffer until clear/home or timeout
                 csUp := strings.ToUpper(c.charset)
@@ -624,19 +576,14 @@ func (c *Client) readTelnet() {
                     if c.shouldFlushLegacyPreamble(processedData) {
                         c.preambleActive = false
                         processedData = c.preambleBuf
-                        // Reset buffer
                         c.preambleBuf = c.preambleBuf[:0]
                     } else {
-                        // Skip sending this chunk
                         continue
                     }
                 }
 
-                // No auto-detect/switching; rely on explicit charset selection
-
                 // Convert charset-specific bytes to UTF-8 for browser rendering
                 var outputData []byte
-                // bypassUsed := false
                 switch c.charset {
                 case "CP437":
                     utf8String := ConvertCP437ToUTF8Enhanced(processedData)
@@ -645,16 +592,11 @@ func (c *Client) readTelnet() {
                     utf8String := ConvertCP866ToUTF8(processedData)
                     outputData = []byte(utf8String)
                 case "PETSCIIU", "PETSCIIL", "ATASCII":
-                    // Smart ASCII pass-through: check BEFORE control translation
-                    // to avoid bypassing when there are PETSCII control codes
-                    if !c.forceLegacyFull && shouldBypassLegacyMapping(processedData) {
-                        // Even in bypass mode, translate control codes to ANSI
+                    if shouldBypassLegacyMapping(processedData) {
                         processedData = c.translateLegacyControls(processedData)
                         processedData = normalizeCSISGRAny(processedData)
                         outputData = processedData
-                        // bypassUsed = true
                     } else {
-                        // Phase 2: translate PETSCII/ATASCII control bytes into ANSI
                         processedData = c.translateLegacyControls(processedData)
                         processedData = normalizeCSISGRAny(processedData)
                         if c.charset == "PETSCIIU" {
@@ -672,24 +614,6 @@ func (c *Client) readTelnet() {
                     outputData = processedData
                 }
 
-                if hexLoggingEnabled() {
-                    c.mu.Lock()
-                    // cols := c.termCols
-                    // rows := c.termRows
-                    cs := c.charset
-                    c.mu.Unlock()
-                    // log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
-                    // Log the final bytes as the browser will see them
-                    logBytes := outputData
-                    if bytes.Contains(logBytes, []byte{0x1B, '['}) {
-                        logBytes = normalizeCSISGRAny(append([]byte(nil), logBytes...))
-                    }
-                    preview := string(logBytes)
-                    if len(preview) > 120 {
-                        preview = preview[:120] + "…"
-                    }
-                    log.Printf("TEXT (final) %s: %q", cs, preview)
-                }
 
                 // Final output guard: normalize any CSI SGR with uppercase 'M' or lowercase 'j'
                 if bytes.Contains(outputData, []byte{0x1B, '['}) {
@@ -711,108 +635,8 @@ func (c *Client) readTelnet() {
 	}
 }
 
-// playCapture replays a previously captured clean data stream
-// through the same processing pipeline used for telnet data.
-// It supports both CAPTURE_FILE env var and enhanced captures with metadata.
-func (c *Client) playCapture() {
-    path := os.Getenv("CAPTURE_FILE")
-
-    // If no CAPTURE_FILE, try to find the latest capture in captures/ dir
-    if path == "" {
-        // Try to find the latest capture file
-        files, err := os.ReadDir("captures")
-        if err == nil && len(files) > 0 {
-            var latestCapture string
-            var latestTime time.Time
-            for _, file := range files {
-                if strings.HasSuffix(file.Name(), ".bin") {
-                    info, err := file.Info()
-                    if err == nil && info.ModTime().After(latestTime) {
-                        latestTime = info.ModTime()
-                        latestCapture = filepath.Join("captures", file.Name())
-                    }
-                }
-            }
-            if latestCapture != "" {
-                path = latestCapture
-                log.Printf("Playing latest capture: %s", path)
-
-                // Try to load metadata to set charset
-                metaPath := strings.TrimSuffix(path, ".bin") + ".json"
-                if metaData, err := os.ReadFile(metaPath); err == nil {
-                    var meta struct {
-                        Charset string `json:"charset"`
-                    }
-                    if err := json.Unmarshal(metaData, &meta); err == nil && meta.Charset != "" {
-                        c.charset = meta.Charset
-                        log.Printf("Set charset from metadata: %s", meta.Charset)
-                    }
-                }
-            }
-        }
-
-        // Fallback to capture.bin if no captures found
-        if path == "" {
-            path = "capture.bin"
-        }
-    }
-
-    f, err := os.Open(path)
-    if err != nil {
-        c.sendMessage("error", fmt.Sprintf("Failed to open capture: %v", err))
-        return
-    }
-    defer f.Close()
-
-    log.Printf("Playing capture from: %s (charset: %s)", path, c.charset)
-
-    prevForce := c.forceLegacyFull
-    c.forceLegacyFull = true
-    defer func() { c.forceLegacyFull = prevForce }()
-
-    buf := make([]byte, 1024)
-    for {
-        n, err := f.Read(buf)
-        if n > 0 {
-            chunk := make([]byte, n)
-            copy(chunk, buf[:n])
-            c.processAndSendClean(chunk)
-            time.Sleep(20 * time.Millisecond)
-        }
-        if err == io.EOF {
-            break
-        }
-        if err != nil {
-            break
-        }
-    }
-
-    log.Printf("Capture replay complete")
-}
-
-// processAndSendClean processes a "clean" (telnet-processed) byte slice through the
-// same display pipeline and emits it to the browser.
-func (c *Client) processAndSendClean(cleanData []byte) {
-    if len(cleanData) == 0 {
-        return
-    }
-    // ANSI music (optional)
-    if c.music != nil {
-        if remaining, consumed := c.music.Process(cleanData); consumed {
-            cleanData = remaining
-        }
-    }
-    if os.Getenv("TERM_ANSWERS") == "true" {
-        c.handleTerminalQueries(cleanData)
-    }
-    processedData := cleanData
-    if c.ansiEnhanced != nil && os.Getenv("ANSI_NORMALIZE") != "false" {
-        cs := strings.ToUpper(c.charset)
-        if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" {
-            processedData = c.ansiEnhanced.ProcessANSIData(cleanData)
-        }
-    }
-    // Legacy preamble suppression
+// Legacy preamble helper function
+func (c *Client) processLegacyPreamble(processedData []byte) ([]byte, bool) {
     csUp := strings.ToUpper(c.charset)
     if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
         c.preambleBuf = append(c.preambleBuf, processedData...)
@@ -820,10 +644,15 @@ func (c *Client) processAndSendClean(cleanData []byte) {
             c.preambleActive = false
             processedData = c.preambleBuf
             c.preambleBuf = c.preambleBuf[:0]
-        } else {
-            return
+            return processedData, true
         }
+        return nil, false
     }
+    return processedData, true
+}
+
+// Helper to convert charset to output data
+func (c *Client) convertCharsetToOutput(processedData []byte) ([]byte, bool) {
     var outputData []byte
     bypassUsed := false
     switch c.charset {
@@ -834,7 +663,7 @@ func (c *Client) processAndSendClean(cleanData []byte) {
         utf8String := ConvertCP866ToUTF8(processedData)
         outputData = []byte(utf8String)
     case "PETSCIIU", "PETSCIIL", "ATASCII":
-        if !c.forceLegacyFull && shouldBypassLegacyMapping(processedData) {
+        if shouldBypassLegacyMapping(processedData) {
             processedData = c.translateLegacyControls(processedData)
             processedData = normalizeCSISGRAny(processedData)
             outputData = processedData
@@ -856,26 +685,7 @@ func (c *Client) processAndSendClean(cleanData []byte) {
     default:
         outputData = processedData
     }
-    if os.Getenv("HEX_DUMP") == "true" {
-        c.mu.Lock()
-        cols := c.termCols
-        rows := c.termRows
-        cs := c.charset
-        c.mu.Unlock()
-        log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
-        logBytes := outputData
-        if bytes.Contains(logBytes, []byte{0x1B, '['}) {
-            logBytes = normalizeCSISGRAny(append([]byte(nil), logBytes...))
-        }
-        preview := string(logBytes)
-        if len(preview) > 120 { preview = preview[:120] + "…" }
-        log.Printf("TEXT (final) %s: %q", cs, preview)
-    }
-    c.sendJSON(Message{
-        Type:     "data",
-        Data:     base64.StdEncoding.EncodeToString(outputData),
-        Encoding: "base64",
-    })
+    return outputData, bypassUsed
 }
 
 // hasZmodemSignature heuristically detects common ZMODEM start sequences.
@@ -1435,41 +1245,6 @@ func (c *Client) sendTelnet(b []byte) {
     }
 }
 
-// debugHexDump logs up to max bytes of data with a simple hex+ASCII view
-// hexLoggingEnabled returns true if HEX_DUMP environment variable is set
-func hexLoggingEnabled() bool {
-    return os.Getenv("HEX_DUMP") == "true"
-}
-
-func (c *Client) debugHexDump(label string, data []byte, max int) {
-    if len(data) == 0 {
-        return
-    }
-    if max <= 0 || max > len(data) {
-        max = len(data)
-    }
-    const per = 16
-    log.Printf("HEX %s: %d bytes (showing %d)", label, len(data), max)
-    for off := 0; off < max; off += per {
-        end := off + per
-        if end > max {
-            end = max
-        }
-        // hex bytes
-        hex := make([]byte, 0, (end-off)*3)
-        ascii := make([]byte, 0, end-off)
-        for i := off; i < end; i++ {
-            b := data[i]
-            hex = append(hex, fmt.Sprintf("%02x ", b)...)
-            if b >= 32 && b <= 126 {
-                ascii = append(ascii, b)
-            } else {
-                ascii = append(ascii, '.')
-            }
-        }
-        log.Printf("%04x: %-48s |%s|", off, string(hex), string(ascii))
-    }
-}
 
 // updateCursorFrom parses a subset of ANSI to track cursor position
 func (c *Client) updateCursorFrom(data []byte) {
@@ -1691,9 +1466,6 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
                     processed = c.ansiEnhanced.ProcessANSIData(processed)
                 }
             }
-            if os.Getenv("HEX_DUMP") == "true" {
-                // c.debugHexDump("SSH->CLIENT", processed, 256)
-            }
             // Legacy preamble suppression on SSH
             csUp := strings.ToUpper(c.charset)
             if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
@@ -1706,63 +1478,8 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
                     continue
                 }
             }
-            // No auto-detect/switching on SSH
-            // Convert charset-specific bytes to UTF-8 for browser rendering
-            var outputData []byte
-            bypassUsed := false
-            switch c.charset {
-            case "CP437":
-                utf8String := ConvertCP437ToUTF8Enhanced(processed)
-                outputData = []byte(utf8String)
-            case "CP866":
-                utf8String := ConvertCP866ToUTF8(processed)
-                outputData = []byte(utf8String)
-            case "PETSCIIU", "PETSCIIL", "ATASCII":
-                // Smart ASCII pass-through: check BEFORE control translation
-                // to avoid bypassing when there are PETSCII control codes
-                if !c.forceLegacyFull && shouldBypassLegacyMapping(processed) {
-                    // Even in bypass mode, translate control codes to ANSI
-                    processed = c.translateLegacyControls(processed)
-                    processed = normalizeCSISGRAny(processed)
-                    outputData = processed
-                    bypassUsed = true
-                } else {
-                    // Phase 2: translate PETSCII/ATASCII control bytes into ANSI
-                    processed = c.translateLegacyControls(processed)
-                    processed = normalizeCSISGRAny(processed)
-                    if c.charset == "PETSCIIU" {
-                        utf8String := ConvertPETSCIIUToUTF8(processed)
-                        outputData = []byte(utf8String)
-                    } else if c.charset == "PETSCIIL" {
-                        utf8String := ConvertPETSCIILToUTF8(processed)
-                        outputData = []byte(utf8String)
-                    } else {
-                        utf8String := ConvertATASCIIToUTF8(processed)
-                        outputData = []byte(utf8String)
-                    }
-                }
-            default:
-                outputData = processed
-            }
-
-            if os.Getenv("HEX_DUMP") == "true" {
-                c.mu.Lock()
-                cols := c.termCols
-                rows := c.termRows
-                cs := c.charset
-                c.mu.Unlock()
-                log.Printf("MODE: charset=%s cols=%d rows=%d bypass=%v", cs, cols, rows, bypassUsed)
-                // Log the final bytes as the browser will see them
-                logBytes := outputData
-                if bytes.Contains(logBytes, []byte{0x1B, '['}) {
-                    logBytes = normalizeCSISGRAny(append([]byte(nil), logBytes...))
-                }
-                preview := string(logBytes)
-                if len(preview) > 120 {
-                    preview = preview[:120] + "…"
-                }
-                log.Printf("TEXT (final) %s: %q", cs, preview)
-            }
+            // Use the same charset conversion as telnet
+            outputData, _ := c.convertCharsetToOutput(processed)
 
             // Final output guard for SSH path as well
             if bytes.Contains(outputData, []byte{0x1B, '['}) {
@@ -1973,10 +1690,6 @@ func (c *Client) disconnect() {
 		c.zmodemReceiver.Cancel()
 	}
 
-    // Capture disabled for production
-    // if err := captureManager.StopCapture(); err != nil && err.Error() != "no active capture" {
-    //     log.Printf("Failed to stop capture on disconnect: %v", err)
-    // }
 
 	if c.telnet != nil {
 		c.telnet.Close()
