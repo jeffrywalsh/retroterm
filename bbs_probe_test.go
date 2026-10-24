@@ -14,7 +14,8 @@ package main
 //
 // Knobs for TestProbeDirectory:
 //   BBS_PROBE_OUT      output directory (default captures/probe-<timestamp>)
-//   BBS_PROBE_FILTER   only probe entries whose name or host contains this
+//   BBS_PROBE_FILTER   only probe entries whose name or host contains one of
+//                      these comma-separated terms
 //   BBS_PROBE_WORKERS  concurrent hosts (default 24; ports on one host run in turn)
 //   BBS_PROBE_SECONDS  max session length per BBS (default 20)
 //   BBS_PROBE_PROXY=1  dial through the proxy in config.json, like production
@@ -61,8 +62,12 @@ func TestProbeDirectory(t *testing.T) {
 	if f := strings.ToLower(os.Getenv("BBS_PROBE_FILTER")); f != "" {
 		var kept []BBSEntry
 		for _, e := range entries {
-			if strings.Contains(strings.ToLower(e.Name), f) || strings.Contains(strings.ToLower(e.Host), f) {
-				kept = append(kept, e)
+			for _, term := range strings.Split(f, ",") {
+				term = strings.TrimSpace(term)
+				if term != "" && (strings.Contains(strings.ToLower(e.Name), term) || strings.Contains(strings.ToLower(e.Host), term)) {
+					kept = append(kept, e)
+					break
+				}
 			}
 		}
 		entries = kept
@@ -84,9 +89,10 @@ func TestProbeDirectory(t *testing.T) {
 	workers := envInt("BBS_PROBE_WORKERS", 24)
 	session := time.Duration(envInt("BBS_PROBE_SECONDS", 20)) * time.Second
 
-	// Answer DA/DSR/CPR like a terminal would; many BBSes use these to detect ANSI
+	// Answer DA/DSR/CPR like a terminal would; many BBSes use these to detect
+	// ANSI, screen size and UTF-8, so CPR must report the real (tracked) cursor
 	t.Setenv("TERM_ANSWERS", "true")
-	t.Setenv("CPR_REPLY", "true")
+	t.Setenv("CURSOR_TRACK", "true")
 	// Silence per-connection logging from the code under test
 	log.SetOutput(io.Discard)
 	defer log.SetOutput(os.Stderr)
@@ -199,7 +205,7 @@ func probeBBS(e BBSEntry, out string, session time.Duration) (meta probeMeta) {
 			lastData = time.Now()
 			// Reply to telnet negotiation and terminal queries as readTelnet does
 			if clean := c.processTelnetData(buf[:n]); len(clean) > 0 {
-				c.handleTerminalQueries(clean)
+				answerQueriesInOrder(c, clean)
 			}
 		}
 		if err != nil {
@@ -222,6 +228,22 @@ func probeBBS(e BBSEntry, out string, session time.Duration) (meta probeMeta) {
 		meta.Error = "no data"
 	}
 	return meta
+}
+
+// answerQueriesInOrder advances the cursor tracker up to each CPR request
+// before answering it, so a board that prints and then asks (screen size and
+// UTF-8 detection) gets the position a terminal would report at that moment.
+func answerQueriesInOrder(c *Client, data []byte) {
+	cpr := []byte{0x1B, '[', '6', 'n'}
+	for len(data) > 0 {
+		end := len(data)
+		if k := bytes.Index(data, cpr); k >= 0 {
+			end = k + len(cpr)
+		}
+		c.updateCursorFrom(data[:end])
+		c.handleTerminalQueries(data[:end])
+		data = data[end:]
+	}
 }
 
 var probeFileSafe = regexp.MustCompile(`[^A-Za-z0-9-]+`)
@@ -250,9 +272,11 @@ type probeStats struct {
 	textBytes, csi, high          int
 	petscii, atasciiEOL, cyrillic int
 	cyrillicWords                 int
+	big5Bad, big5Distinct         int
+	gbkBad, gbkDistinct           int
 	crOnly, crlf                  int
 	utf8Multi, utf8Bad            int
-	fffd, strayCtrl               int
+	fffd, c1, ignoredC0           int
 	guess                         string
 }
 
@@ -278,7 +302,15 @@ func analyzeProbe(meta probeMeta, raw []byte) probeStats {
 		}
 		switch {
 		case b == 0x1B && i+1 < len(text) && text[i+1] == '[':
-			s.csi++
+			// Count ANSI output, not terminal queries (ESC[6n, ESC[c): C64
+			// boards like Image BBS and C-Base send those to detect callers
+			j := i + 2
+			for j < len(text) && (text[j] < 0x40 || text[j] > 0x7E) {
+				j++
+			}
+			if j < len(text) && text[j] != 'n' && text[j] != 'c' {
+				s.csi++
+			}
 		case b == 0x0D:
 			if i+1 < len(text) && text[i+1] == 0x0A {
 				s.crlf++
@@ -302,17 +334,39 @@ func analyzeProbe(meta probeMeta, raw []byte) probeStats {
 			}
 		}
 	}
+	utf8Seen := map[rune]bool{}
 	for rest := text; len(rest) > 0; {
 		r, size := utf8.DecodeRune(rest)
 		if r == utf8.RuneError && size == 1 {
 			if rest[0] >= 0x80 {
 				s.utf8Bad++
 			}
-		} else if size > 1 {
+		} else if size > 1 && r != 0xFEFF { // Synchronet sends a BOM to test the terminal
 			s.utf8Multi++
+			utf8Seen[r] = true
 		}
 		rest = rest[size:]
 	}
+	// Big5/GBK: decode with each and count errors and distinct CJK ideographs.
+	// CP437 box art often decodes "validly" as both, so only a one-sided win
+	// with varied characters counts as Chinese text.
+	cjkScore := func(cs string) (bad, distinct int) {
+		seen := map[rune]bool{}
+		for _, r := range string(newDBCSDecoder(cs).Decode(text)) {
+			if r == utf8.RuneError {
+				bad++
+			} else if r >= 0x4E00 && r <= 0x9FFF {
+				seen[r] = true
+			}
+		}
+		return bad, len(seen)
+	}
+	s.big5Bad, s.big5Distinct = cjkScore("BIG5")
+	s.gbkBad, s.gbkDistinct = cjkScore("GBK")
+	cjkWins := func(bad, distinct, otherBad int) bool {
+		return bad <= 1 && distinct >= 15 && otherBad >= 10 && otherBad > 5*(bad+1)
+	}
+	legacy := s.csi == 0 && (s.petscii > 5 || s.atasciiEOL > 3)
 
 	// Decode exactly as readTelnet would for this charset
 	processed := text
@@ -325,9 +379,13 @@ func analyzeProbe(meta probeMeta, raw []byte) probeStats {
 		switch {
 		case r == utf8.RuneError:
 			s.fffd++
+		case r >= 0x80 && r <= 0x9F:
+			// xterm.js acts on C1 controls, so these corrupt the screen
+			s.c1++
 		case r < 0x20 && r != '\r' && r != '\n' && r != '\t' && r != '\b' && r != 0x07 && r != 0x1B,
-			r == 0x7F, r >= 0x80 && r <= 0x9F:
-			s.strayCtrl++
+			r == 0x7F:
+			// NUL (telnet CR NUL), ENQ, SI, ... are ignored by xterm.js: informational
+			s.ignoredC0++
 		}
 	}
 
@@ -337,12 +395,25 @@ func analyzeProbe(meta probeMeta, raw []byte) probeStats {
 	case s.high == 0 && s.petscii == 0 && s.atasciiEOL == 0:
 		// Plain ASCII (with or without ANSI) reads the same in every 8-bit charset
 		s.guess = "ASCII"
-	// 0x9B is also a PETSCII color, so ATASCII needs EOLs with almost no CRs
-	case s.atasciiEOL > 3 && (s.crlf+s.crOnly)*4 < s.atasciiEOL:
-		s.guess = "ATASCII"
-	case s.csi == 0 && s.petscii > 5:
-		s.guess = "PETSCII"
-	case s.utf8Multi > 10 && s.utf8Bad == 0:
+	case legacy:
+		// PETSCII and ATASCII art share most byte values, so bytes alone cannot
+		// tell them apart reliably: keep the directory's legacy family, and
+		// otherwise use ATASCII's clear (0x7D) and EOL (0x9B) as the hint
+		switch {
+		case isLegacyCharset(meta.Charset) && meta.Charset == "ATASCII":
+			s.guess = "ATASCII"
+		case isLegacyCharset(meta.Charset):
+			s.guess = "PETSCII"
+		case bytes.IndexByte(text, 0x7D) >= 0 && s.atasciiEOL > s.crOnly:
+			s.guess = "ATASCII"
+		default:
+			s.guess = "PETSCII"
+		}
+	case cjkWins(s.big5Bad, s.big5Distinct, s.gbkBad):
+		s.guess = "BIG5"
+	case cjkWins(s.gbkBad, s.gbkDistinct, s.big5Bad):
+		s.guess = "GBK"
+	case s.utf8Bad == 0 && s.utf8Multi >= 20 && len(utf8Seen) >= 3:
 		s.guess = "UTF-8"
 	case s.cyrillicWords >= 5:
 		s.guess = "CP866"
@@ -400,7 +471,7 @@ func writeProbeReport(t *testing.T, dir string) {
 	w := csv.NewWriter(f)
 	_ = w.Write([]string{"name", "host", "port", "software", "dir_encoding", "status", "raw_bytes",
 		"text_bytes", "ansi_csi", "high_bytes", "petscii_ctrl", "atascii_eol", "cyrillic_bytes", "cyrillic_words",
-		"cr_only", "crlf", "utf8_multibyte", "utf8_invalid", "decoded_fffd", "decoded_stray_ctrl",
+		"cr_only", "crlf", "utf8_multibyte", "utf8_invalid", "decoded_fffd", "decoded_c1", "decoded_ignored_c0",
 		"guess", "mismatch"})
 	status := map[string]int{}
 	mismatches := map[string]int{}
@@ -414,21 +485,21 @@ func writeProbeReport(t *testing.T, dir string) {
 		if s.mismatch() {
 			mismatches[s.meta.Charset+" -> "+s.guess]++
 		}
-		if st == "ok" && (s.fffd > 0 || s.strayCtrl > 0) {
+		if st == "ok" && (s.fffd > 0 || s.c1 > 0) {
 			unclean[s.meta.Charset]++
 		}
 		_ = w.Write([]string{s.meta.Name, s.meta.Host, strconv.Itoa(s.meta.Port), s.meta.Software,
 			s.meta.Charset, st, strconv.FormatInt(s.meta.BytesCaptured, 10), strconv.Itoa(s.textBytes),
 			strconv.Itoa(s.csi), strconv.Itoa(s.high), strconv.Itoa(s.petscii), strconv.Itoa(s.atasciiEOL),
 			strconv.Itoa(s.cyrillic), strconv.Itoa(s.cyrillicWords), strconv.Itoa(s.crOnly), strconv.Itoa(s.crlf), strconv.Itoa(s.utf8Multi),
-			strconv.Itoa(s.utf8Bad), strconv.Itoa(s.fffd), strconv.Itoa(s.strayCtrl), s.guess,
+			strconv.Itoa(s.utf8Bad), strconv.Itoa(s.fffd), strconv.Itoa(s.c1), strconv.Itoa(s.ignoredC0), s.guess,
 			strconv.FormatBool(s.mismatch())})
 	}
 	w.Flush()
 
 	t.Logf("%d captures analyzed, summary at %s", len(all), filepath.Join(dir, "summary.csv"))
 	t.Logf("connection status: %v", status)
-	t.Logf("decoded with replacement/stray control chars, by directory encoding: %v", unclean)
+	t.Logf("decoded with visible damage (U+FFFD or C1 controls), by directory encoding: %v", unclean)
 	t.Logf("directory encoding vs detected: %v", mismatches)
 }
 
