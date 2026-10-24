@@ -89,6 +89,14 @@ class BBSTerminal {
         try {
             const response = await fetch('/api/config');
             const config = await response.json();
+            // Footer: the date the server was built, e.g. "Updated October 24, 2026"
+            const updatedEl = document.getElementById('site-updated');
+            const ymd = /^(\d{4})-(\d{2})-(\d{2})$/.exec(config.updated || '');
+            if (updatedEl && ymd) {
+                const date = new Date(Date.UTC(+ymd[1], ymd[2] - 1, +ymd[3]));
+                updatedEl.textContent = 'Updated ' + date.toLocaleDateString('en-US',
+                    { timeZone: 'UTC', year: 'numeric', month: 'long', day: 'numeric' });
+            }
             this.allowManualConnection = false; // Always false now, no manual connections
             this.testMode = !!config.testMode;
             if (this.testMode) {

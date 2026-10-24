@@ -1,0 +1,19 @@
+{
+  "zone": "retroterm.com",
+  "tunnel": "retroterm-dellcon",
+  "previous_origin": "167.224.169.107",
+  "hosts": [
+    {"name": "retroterm.com", "before": "A"},
+    {"name": "www.retroterm.com", "before": "none"}
+  ],
+  "check": {"name": "tunnel-check.retroterm.com"},
+  "config": {
+    "ingress": [
+      {"hostname": "retroterm.com", "service": "http://caddy:8080"},
+      {"hostname": "www.retroterm.com", "service": "http://caddy:8080"},
+      {"hostname": "tunnel-check.retroterm.com", "service": "http://caddy:8080",
+       "originRequest": {"httpHostHeader": "retroterm.com"}},
+      {"service": "http_status:404"}
+    ]
+  }
+}

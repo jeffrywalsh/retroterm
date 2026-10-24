@@ -11,6 +11,25 @@ import (
 type ConfigResponse struct{
     TestMode    bool   `json:"testMode"`
     CaptureFile string `json:"captureFile,omitempty"`
+    Updated     string `json:"updated,omitempty"` // YYYY-MM-DD the server was built
+}
+
+// buildDate is set when building a release:
+//   go build -ldflags "-X main.buildDate=$(date -u +%Y-%m-%d)"
+var buildDate string
+
+// siteUpdated is the date shown as "Updated" in the page footer: the build
+// date, or without one the executable's modification date.
+func siteUpdated() string {
+    if buildDate != "" {
+        return buildDate
+    }
+    if exe, err := os.Executable(); err == nil {
+        if fi, err := os.Stat(exe); err == nil {
+            return fi.ModTime().UTC().Format("2006-01-02")
+        }
+    }
+    return ""
 }
 
 type BBSListResponse struct {
@@ -29,6 +48,7 @@ func handleGetConfig(w http.ResponseWriter, r *http.Request) {
     config := ConfigResponse{
         TestMode:    os.Getenv("TEST_MODE") == "true",
         CaptureFile: os.Getenv("CAPTURE_FILE"),
+        Updated:     siteUpdated(),
     }
 
 	// Stateless-only: return minimal config
