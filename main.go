@@ -100,8 +100,12 @@ type Client struct {
     sshSession     *ssh.Session    // SSH session (if using SSH)
     sshIn          io.WriteCloser  // SSH session stdin
     mu             sync.Mutex    // Protects concurrent access
+    // Serializes output to the browser: the read loop, the preamble flush
+    // timer and charset changes. Taken before mu. Guards the decode state
+    // (preamble, legacy, petsciiLastCR, dbcs).
+    outMu          sync.Mutex
     done           chan bool     // Signals connection closure
-    charset        string        // Character set for conversion
+    charset        string        // Character set for conversion; written with outMu and mu held
     zmodemReceiver ZmodemHandler // Active Zmodem handler
     ansiEnhanced   *ANSIEnhancedProcessor // Enhanced ANSI processor
     // Pre-transfer suppression to avoid displaying binary data
@@ -139,6 +143,12 @@ type Client struct {
 
     // PETSCII CR already emitted CRLF; swallow an LF that follows, even in the next read
     petsciiLastCR bool
+
+    // PETSCII/ATASCII: bytes held for the next read (an incomplete escape
+    // sequence, or an ATASCII CR that may start a CRLF)
+    legacyCarry []byte
+    // A PETSCII/ATASCII byte has arrived; ASCII text no longer passes through
+    legacySeen bool
 
     // Big5/GBK decoder; holds a split character across reads (read loop only)
     dbcs *dbcsDecoder
@@ -588,6 +598,7 @@ func (c *Client) readTelnet() {
             zrActive := c.zmodemReceiver != nil && c.zmodemReceiver.Active()
             c.mu.Unlock()
             if len(cleanData) > 0 && !zrActive && !suppressNow {
+                c.outMu.Lock()
                 // ANSI Music: detect and emit events, suppressing music sequences
                 if c.music != nil {
                     if remaining, consumed := c.music.Process(cleanData); consumed {
@@ -598,75 +609,87 @@ func (c *Client) readTelnet() {
                 if os.Getenv("TERM_ANSWERS") == "true" {
                     c.handleTerminalQueries(cleanData)
                 }
-                // Process ANSI sequences with enhanced processor (not for legacy charsets)
-                processedData := cleanData
-                if c.ansiEnhanced != nil && os.Getenv("ANSI_NORMALIZE") != "false" {
-                    cs := strings.ToUpper(c.charset)
-                    if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" {
-                        processedData = c.ansiEnhanced.ProcessANSIData(cleanData)
-                    }
-                }
-                
-                // Legacy preamble suppression: buffer until clear/home or timeout
-                csUp := strings.ToUpper(c.charset)
-                if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
-                    c.preambleBuf = append(c.preambleBuf, processedData...)
-                    if c.shouldFlushLegacyPreamble(processedData) {
-                        c.preambleActive = false
-                        processedData = c.preambleBuf
-                        c.preambleBuf = c.preambleBuf[:0]
-                    } else {
-                        continue
-                    }
-                }
-
-                // Convert charset-specific bytes to UTF-8 for browser rendering
-                outputData, _ := c.convertCharsetToOutput(processedData)
-
-                // Check if charset changed during processing (e.g., via 0x0E/0x8E) and notify UI
-                c.notifyCharsetIfChanged()
-
-                // Final output guard: normalize any CSI SGR with uppercase 'M' or lowercase 'j'
-                if bytes.Contains(outputData, []byte{0x1B, '['}) {
-                    outputData = normalizeCSISGRAny(outputData)
-                }
-                encoded := base64.StdEncoding.EncodeToString(outputData)
-                c.sendJSON(Message{
-                    Type:     "data",
-                    Data:     encoded,
-                    Encoding: "base64",
-                })
-
-                // Update our lightweight cursor tracker if enabled
-                if os.Getenv("CURSOR_TRACK") == "true" {
-                    c.updateCursorFrom(processedData)
-                }
+                c.renderToBrowser(cleanData)
+                c.outMu.Unlock()
             }
 		}
 	}
 }
 
-// Legacy preamble helper function
-func (c *Client) processLegacyPreamble(processedData []byte) ([]byte, bool) {
-    csUp := strings.ToUpper(c.charset)
-    if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
-        c.preambleBuf = append(c.preambleBuf, processedData...)
-        if c.shouldFlushLegacyPreamble(processedData) {
-            c.preambleActive = false
-            processedData = c.preambleBuf
-            c.preambleBuf = c.preambleBuf[:0]
-            return processedData, true
-        }
-        return nil, false
+// renderToBrowser runs remote output through ANSI normalization, legacy
+// preamble buffering and charset conversion, then sends it to the browser.
+// Shared by telnet and SSH. The caller holds outMu.
+func (c *Client) renderToBrowser(data []byte) {
+    c.mu.Lock()
+    legacy := isLegacyCharset(c.charset)
+    c.mu.Unlock()
+    // Process ANSI sequences with enhanced processor (not for legacy charsets)
+    if !legacy && c.ansiEnhanced != nil && os.Getenv("ANSI_NORMALIZE") != "false" {
+        data = c.ansiEnhanced.ProcessANSIData(data)
     }
-    return processedData, true
+    // Legacy preamble suppression: buffer until clear/home or timeout
+    if legacy && c.preambleActive {
+        c.preambleBuf = append(c.preambleBuf, data...)
+        if !c.shouldFlushLegacyPreamble(data) {
+            return
+        }
+        c.preambleActive = false
+        data = c.preambleBuf
+        c.preambleBuf = c.preambleBuf[:0]
+    }
+    c.emitToBrowser(data)
+}
+
+// emitToBrowser converts processed output to UTF-8 and sends it. The caller
+// holds outMu.
+func (c *Client) emitToBrowser(processedData []byte) {
+    // Convert charset-specific bytes to UTF-8 for browser rendering
+    outputData := c.convertCharsetToOutput(processedData)
+
+    // Check if charset changed during processing (e.g., via 0x0E/0x8E) and notify UI
+    c.notifyCharsetIfChanged()
+
+    // Final output guard: normalize any CSI SGR with uppercase 'M' or lowercase 'j'
+    if bytes.Contains(outputData, []byte{0x1B, '['}) {
+        outputData = normalizeCSISGRAny(outputData)
+    }
+    if len(outputData) > 0 {
+        encoded := base64.StdEncoding.EncodeToString(outputData)
+        c.sendJSON(Message{
+            Type:     "data",
+            Data:     encoded,
+            Encoding: "base64",
+        })
+    }
+
+    // Update our lightweight cursor tracker if enabled
+    if os.Getenv("CURSOR_TRACK") == "true" {
+        c.updateCursorFrom(processedData)
+    }
+}
+
+// flushStalePreamble shows a buffered legacy preamble once its timeout has
+// passed, for boards that send a banner and then wait for a key. start
+// identifies the preamble the timer was set for.
+func (c *Client) flushStalePreamble(start time.Time) {
+    c.outMu.Lock()
+    defer c.outMu.Unlock()
+    if !c.preambleActive || !c.preambleStart.Equal(start) || len(c.preambleBuf) == 0 {
+        return
+    }
+    c.preambleActive = false
+    data := append([]byte(nil), c.preambleBuf...)
+    c.preambleBuf = c.preambleBuf[:0]
+    c.emitToBrowser(data)
 }
 
 // Helper to convert charset to output data
-func (c *Client) convertCharsetToOutput(processedData []byte) ([]byte, bool) {
+func (c *Client) convertCharsetToOutput(processedData []byte) []byte {
     var outputData []byte
-    bypassUsed := false
-    switch c.charset {
+    c.mu.Lock()
+    charset := c.charset
+    c.mu.Unlock()
+    switch charset {
     case "CP437":
         utf8String := ConvertCP437ToUTF8Enhanced(processedData)
         outputData = []byte(utf8String)
@@ -674,36 +697,18 @@ func (c *Client) convertCharsetToOutput(processedData []byte) ([]byte, bool) {
         utf8String := ConvertCP866ToUTF8(processedData)
         outputData = []byte(utf8String)
     case "BIG5", "GBK":
-        if c.dbcs == nil || c.dbcs.charset != c.charset {
-            c.dbcs = newDBCSDecoder(c.charset)
+        if c.dbcs == nil || c.dbcs.charset != charset {
+            c.dbcs = newDBCSDecoder(charset)
         }
         outputData = c.dbcs.Decode(processedData)
     case "ISO-8859-1":
         outputData = ConvertLatin1ToUTF8(processedData)
     case "PETSCIIU", "PETSCIIL", "ATASCII":
-        if shouldBypassLegacyMapping(processedData) {
-            processedData = c.translateLegacyControls(processedData)
-            processedData = normalizeCSISGRAny(processedData)
-            outputData = processedData
-            bypassUsed = true
-        } else {
-            processedData = c.translateLegacyControls(processedData)
-            processedData = normalizeCSISGRAny(processedData)
-            if c.charset == "PETSCIIU" {
-                utf8String := ConvertPETSCIIUToUTF8(processedData)
-                outputData = []byte(utf8String)
-            } else if c.charset == "PETSCIIL" {
-                utf8String := ConvertPETSCIILToUTF8(processedData)
-                outputData = []byte(utf8String)
-            } else {
-                utf8String := ConvertATASCIIToUTF8(processedData)
-                outputData = []byte(utf8String)
-            }
-        }
+        outputData = c.convertLegacyToOutput(processedData)
     default:
         outputData = processedData
     }
-    return outputData, bypassUsed
+    return outputData
 }
 
 // hasZmodemSignature heuristically detects common ZMODEM start sequences.
@@ -825,8 +830,11 @@ func (c *Client) processTelnetData(data []byte) []byte {
                                 if len(sb) >= 1 && sb[0] == TELQUAL_SEND {
                                     // Reply: IAC SB TTYPE IS <type> IAC SE
                                     termType := "ansi"
+                                    c.mu.Lock()
+                                    charset := c.charset
+                                    c.mu.Unlock()
                                     // Advertise PETSCII/ATASCII when selected
-                                    switch strings.ToUpper(c.charset) {
+                                    switch strings.ToUpper(charset) {
                                     case "PETSCIIU", "PETSCIIL":
                                         termType = "PETSCII"
                                     case "ATASCII":
@@ -871,30 +879,6 @@ func (c *Client) processTelnetData(data []byte) []byte {
     }
 
     return clean
-}
-
-// detectLegacyCharset returns a suggested charset ("PETSCIIU" or "ATASCII") based on
-// simple byte pattern heuristics in the provided data. Empty string if no suggestion.
-// shouldBypassLegacyMapping returns true when the data chunk is mostly printable ASCII
-// and contains no PETSCII/ATASCII legacy control bytes, indicating this should be
-// displayed as plain text (e.g., busy messages, MOTD lines) even in legacy sessions.
-func shouldBypassLegacyMapping(data []byte) bool {
-    if len(data) == 0 {
-        return false
-    }
-    printable := 0
-    nonAscii := 0
-    for _, b := range data {
-        if (b >= 0x20 && b <= 0x7E) || b == '\r' || b == '\n' || b == '\t' {
-            printable++
-        } else if b >= 0x80 {
-            // Any byte >= 0x80 is likely PETSCII graphics or control
-            nonAscii++
-        }
-    }
-    // Only bypass if it's mostly printable ASCII with no high bytes
-    // This ensures PETSCII graphics (0x80-0xFF) always get converted
-    return nonAscii == 0 && printable*100/len(data) >= 85
 }
 
 // joinANSIChunks concatenates carry+chunk and returns (emit, rest) where emit contains
@@ -1001,11 +985,10 @@ func completeAnsiCutIndex(buf []byte) int {
     return i
 }
 
-// normalizeCSISGRCase fixes sequences like ESC [ 37 M -> ESC [ 37 m (SGR)
-// when the parameters are digits/semicolons only. This guards against
-// accidental uppercase 'M' which ANSI interprets as DL (Delete Line).
 // normalizeCSISGRAny converts CSI sequences that look like SGR but end with 'M'
-// into proper 'm' (7-bit ESC[ form only). Do not touch 0x9B here since in
+// into proper 'm' (7-bit ESC[ form only), e.g. Image BBS's ESC[1;3;5;7;46M.
+// Only sequences with several parameters are changed, since Delete Line (DL)
+// takes at most one. Do not touch 0x9B here since in
 // legacy charsets (PETSCII) 0x9B is also a color code before translation.
 func normalizeCSISGRAny(in []byte) []byte {
     if len(in) < 3 {
@@ -1032,11 +1015,15 @@ func normalizeCSISGRAny(in []byte) []byte {
                     // Only normalize non-private sequences
                     if !isPrivate {
                         if c == 'M' { // Uppercase M
-                            // Verify params are digits/semicolons only
-                            valid := true
+                            // Verify params are digits/semicolons only, with more
+                            // than one: Delete Line takes at most one, so
+                            // ESC[M and ESC[3M are real and left alone
+                            valid := false
                             for k := i + 2; k < j; k++ {
                                 d := in[k]
-                                if !(d == ';' || (d >= '0' && d <= '9')) {
+                                if d == ';' {
+                                    valid = true
+                                } else if d < '0' || d > '9' {
                                     valid = false
                                     break
                                 }
@@ -1115,10 +1102,15 @@ func (c *Client) sendTelnetNAWS() {
 // setCharsetAndAdjust sets charset and adjusts NAWS to a reasonable size.
 // PETSCII/ATASCII use 40x25; ANSI/CP437/CP866/UTF-8 use 80x25.
 func (c *Client) setCharsetAndAdjust(cs string) {
+    c.outMu.Lock()
+    defer c.outMu.Unlock()
     c.mu.Lock()
     oldCols := c.termCols
     oldRows := c.termRows
     c.charset = cs
+    c.legacyCarry = nil
+    c.legacySeen = false
+    c.petsciiLastCR = false
     switch strings.ToUpper(cs) {
     case "PETSCIIU", "PETSCIIL", "ATASCII":
         c.termCols = 40
@@ -1130,7 +1122,11 @@ func (c *Client) setCharsetAndAdjust(cs string) {
         } else {
             c.preambleBuf = c.preambleBuf[:0]
         }
-        c.preambleStart = time.Now()
+        start := time.Now()
+        c.preambleStart = start
+        // Without this, a banner followed by silence stays buffered until
+        // the board sends more
+        time.AfterFunc(legacyPreambleTimeout, func() { c.flushStalePreamble(start) })
     default:
         if c.termCols < 80 {
             c.termCols = 80
@@ -1166,6 +1162,10 @@ func (c *Client) notifyCharsetIfChanged() {
     }
 }
 
+// legacyPreambleTimeout is how long legacy output is buffered waiting for the
+// board's first clear or home.
+const legacyPreambleTimeout = 1500 * time.Millisecond
+
 // shouldFlushLegacyPreamble decides when to flush buffered legacy preamble.
 // Flush triggers on PETSCII clear (0x93) or home (0x13), ATASCII clear (0x7D),
 // or a short timeout/size threshold.
@@ -1191,7 +1191,7 @@ func (c *Client) shouldFlushLegacyPreamble(chunk []byte) bool {
         }
     }
     // Fallbacks: time/size
-    if time.Since(c.preambleStart) > 1500*time.Millisecond {
+    if time.Since(c.preambleStart) >= legacyPreambleTimeout {
         return true
     }
     if len(c.preambleBuf)+len(chunk) > 8192 {
@@ -1510,42 +1510,10 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
         }
 
         if n > 0 {
-            // Process ANSI normalization first
-            processed := buffer[:n]
-            if c.ansiEnhanced != nil {
-                cs := strings.ToUpper(c.charset)
-                if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" && os.Getenv("ANSI_NORMALIZE") != "false" {
-                    processed = c.ansiEnhanced.ProcessANSIData(processed)
-                }
-            }
-            // Legacy preamble suppression on SSH
-            csUp := strings.ToUpper(c.charset)
-            if (csUp == "PETSCIIU" || csUp == "PETSCIIL" || csUp == "ATASCII") && c.preambleActive {
-                c.preambleBuf = append(c.preambleBuf, processed...)
-                if c.shouldFlushLegacyPreamble(processed) {
-                    c.preambleActive = false
-                    processed = c.preambleBuf
-                    c.preambleBuf = c.preambleBuf[:0]
-                } else {
-                    continue
-                }
-            }
-            // Use the same charset conversion as telnet
-            outputData, _ := c.convertCharsetToOutput(processed)
-
-            // Check if charset changed during processing (e.g., via 0x0E/0x8E) and notify UI
-            c.notifyCharsetIfChanged()
-
-            // Final output guard for SSH path as well
-            if bytes.Contains(outputData, []byte{0x1B, '['}) {
-                outputData = normalizeCSISGRAny(outputData)
-            }
-            encoded := base64.StdEncoding.EncodeToString(outputData)
-            c.sendJSON(Message{
-                Type:     "data",
-                Data:     encoded,
-                Encoding: "base64",
-            })
+            // Same output pipeline as telnet
+            c.outMu.Lock()
+            c.renderToBrowser(buffer[:n])
+            c.outMu.Unlock()
         }
     }
 }
