@@ -208,6 +208,21 @@ func LoadBBSFromCSV(filename string) ([]BBSEntry, error) {
 		id = strings.ReplaceAll(id, "-", "_")
 		id = strings.ReplaceAll(id, "__", "_")
 
+		// Auto-detect encoding from software field
+		encoding := "CP437"
+		softwareLower := strings.ToLower(software)
+		if strings.Contains(softwareLower, "petscii") ||
+			strings.Contains(softwareLower, "color 64") ||
+			strings.Contains(softwareLower, "c64") ||
+			strings.Contains(softwareLower, "commodore") ||
+			strings.Contains(softwareLower, "image bbs") ||
+			strings.Contains(softwareLower, "c*base") {
+			encoding = "PETSCIIU" // Default to upper/graphics mode
+		} else if strings.Contains(softwareLower, "atascii") ||
+			strings.Contains(softwareLower, "atari") {
+			encoding = "ATASCII"
+		}
+
 		entry := BBSEntry{
 			ID:          id,
 			Name:        name,
@@ -215,13 +230,14 @@ func LoadBBSFromCSV(filename string) ([]BBSEntry, error) {
 			Port:        port,
 			Protocol:    "telnet",
 			Description: fmt.Sprintf("%s BBS", name),
-			Encoding:    "CP437",
+			Encoding:    encoding,
 			Software:    software,
 			Location:    location,
 			Active:      true,
 			Slug:        GenerateSlug(name),
 		}
 
+		// Explicit override from charset_bbs.csv takes precedence
 		if override := findCharsetOverride(overrides, name, host); override != "" {
 			entry.Encoding = override
 		}

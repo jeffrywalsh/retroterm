@@ -16,6 +16,7 @@ class BBSTerminal {
         this._indeterminateActive = false;
         this.currentBBS = null;
         this.lastConnection = null;
+        this.awaitingCharset = false;
         this.music = null;
         // fullscreen state removed
         
@@ -313,13 +314,17 @@ class BBSTerminal {
                     this.ws.send(JSON.stringify({ type: 'setCharset', charset: newCharset }));
                     this.terminal.writeln(`\x1b[36mSwitched character encoding to: ${newCharset}\x1b[0m`);
                 }
-                // For PETSCII/ATASCII, prefer 40x25 for authenticity
+                // Auto-resize based on charset
+                const sel = document.getElementById('terminal-size');
                 if (newCharset === 'PETSCIIU' || newCharset === 'PETSCIIL' || newCharset === 'ATASCII') {
-                    const sel = document.getElementById('terminal-size');
+                    // PETSCII/ATASCII: 40x25 for authenticity
                     if (sel) sel.value = '40x25';
                     this.resizeTerminal(40, 25);
+                } else {
+                    // CP437/CP866/UTF-8: 80x25 standard
+                    if (sel) sel.value = '80x25';
+                    this.resizeTerminal(80, 25);
                 }
-                // For AUTO, let the server auto-detect and adjust size
             });
         }
 
@@ -440,6 +445,8 @@ class BBSTerminal {
             switch(msg.type) {
                 case 'connected':
                     this.isConnected = true;
+                    // Server follows 'connected' with the session's initial charset
+                    this.awaitingCharset = true;
                     this.updateStatus('Connected', 'connected');
                     this.terminal.writeln(`\x1b[32m${msg.message}\x1b[0m`);
                     document.getElementById('disconnect-btn-header').style.display = 'inline-block';
@@ -455,10 +462,15 @@ class BBSTerminal {
                 case 'data':
                     let bytes;
                     if (msg.encoding === 'base64') {
-                        const decoded = atob(msg.data);
-                        bytes = new Uint8Array(decoded.length);
-                        for (let i = 0; i < decoded.length; i++) {
-                            bytes[i] = decoded.charCodeAt(i);
+                        try {
+                            const decoded = atob(msg.data);
+                            bytes = new Uint8Array(decoded.length);
+                            for (let i = 0; i < decoded.length; i++) {
+                                bytes[i] = decoded.charCodeAt(i);
+                            }
+                        } catch (e) {
+                            console.error('Base64 decode error:', e, 'data length:', msg.data?.length);
+                            break;
                         }
                     } else if (typeof msg.data === 'string') {
                         // Treat plain string as UTF-8 text
@@ -550,6 +562,33 @@ class BBSTerminal {
                     // Display status messages
                     if (msg.message) {
                         this.updateStatus(msg.message, 'info');
+                    }
+                    break;
+
+                case 'charset':
+                    // Server reports charset on connect, and again when the BBS
+                    // flips PETSCII case mode (0x0E/0x8E) mid-session
+                    if (msg.charset) {
+                        const charsetEl = document.getElementById('charset');
+                        if (charsetEl) {
+                            charsetEl.value = msg.charset;
+                        }
+                        // Mid-session flips only sync the dropdown; writing or resizing
+                        // here would corrupt the BBS screen
+                        if (!this.awaitingCharset) break;
+                        this.awaitingCharset = false;
+                        // Auto-resize based on detected charset
+                        const sizeEl = document.getElementById('terminal-size');
+                        if (msg.charset === 'PETSCIIU' || msg.charset === 'PETSCIIL' || msg.charset === 'ATASCII') {
+                            // PETSCII/ATASCII: 40x25 for authenticity
+                            if (sizeEl) sizeEl.value = '40x25';
+                            this.resizeTerminal(40, 25);
+                        } else {
+                            // CP437/CP866/UTF-8: 80x25 standard
+                            if (sizeEl) sizeEl.value = '80x25';
+                            this.resizeTerminal(80, 25);
+                        }
+                        this.terminal.writeln(`\x1b[36mCharset: ${msg.charset}\x1b[0m`);
                     }
                     break;
             }
@@ -710,7 +749,7 @@ class BBSTerminal {
         if (terminalDimensions) {
             terminalDimensions.textContent = `${cols}×${rows}`;
         }
-        
+
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({
                 type: 'resize',
@@ -718,7 +757,7 @@ class BBSTerminal {
                 rows: rows
             }));
         }
-        
+
         this.saveSettings();
     }
 
