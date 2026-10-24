@@ -36,10 +36,9 @@ class BBSTerminal {
     // Minimal WS connect used for TEST_MODE Fake Connect (no telnet/ssh connect)
     connectWebSocket() {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-        this.ws = new WebSocket(wsUrl);
+        const ws = this.openSocket();
         this.ws.onopen = () => {
+            if (ws !== this.ws) return;
             this.updateStatus('Connected', 'connected');
             // Initialize Zmodem if available (harmless; may do nothing)
             if (typeof ZmodemIntegration !== 'undefined') {
@@ -49,6 +48,29 @@ class BBSTerminal {
             }
         };
         this.setupWebSocketHandlers();
+    }
+
+    // Opens a fresh WebSocket, closing any previous one. Handlers check that
+    // their socket is still this.ws, so a late close or error from the old
+    // socket cannot reset the UI of the session that replaced it.
+    openSocket() {
+        const old = this.ws;
+        this.ws = null;
+        if (old && (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING)) {
+            old.close();
+        }
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        this.ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        return this.ws;
+    }
+
+    // Selects the column widths for a charset: see the 'dbcs' provider
+    applyCharsetWidths(charset) {
+        try {
+            const dbcs = charset === 'BIG5' || charset === 'GBK';
+            this.terminal.unicode.activeVersion = dbcs ? 'dbcs' : this.defaultUnicodeVersion;
+        } catch (e) {
+        }
     }
 
     async loadConfig() {
@@ -196,8 +218,22 @@ class BBSTerminal {
             },
             cols: this.currentSize.cols,
             rows: this.currentSize.rows,
-            scrollback: 10000
+            scrollback: 10000,
+            // Needed for the Big5/GBK width provider below
+            allowProposedApi: true
         });
+        // Big5/GBK boards lay out every double-byte character as two
+        // columns, including box drawing and symbols that Unicode leaves
+        // single or ambiguous width; the server only sends non-ASCII text
+        // decoded from double-byte pairs in those sessions
+        try {
+            this.terminal.unicode.register({
+                version: 'dbcs',
+                wcwidth: (cp) => cp < 0x20 ? 0 : cp < 0x80 ? 1 : 2
+            });
+            this.defaultUnicodeVersion = this.terminal.unicode.activeVersion;
+        } catch (e) {
+        }
 
         const container = document.getElementById('terminal-container');
         const terminalDiv = document.createElement('div');
@@ -307,6 +343,7 @@ class BBSTerminal {
         if (charsetSel) {
             charsetSel.addEventListener('change', (e) => {
                 const newCharset = e.target.value || 'CP437';
+                this.applyCharsetWidths(newCharset);
                 // Persist preference
                 this.saveSettings();
                 // Inform server if connected so future data path updates
@@ -398,10 +435,10 @@ class BBSTerminal {
         if (disconnectBtn) disconnectBtn.disabled = false;
 
         // Connect WebSocket
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        this.ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        const ws = this.openSocket();
 
         this.ws.onopen = () => {
+            if (ws !== this.ws) return;
             this.terminal.clear();
             this.terminal.writeln(`\x1b[33mConnecting to ${protocol}://${host}:${port}...\x1b[0m`);
             // Charset is determined by server based on BBS configuration
@@ -439,7 +476,9 @@ class BBSTerminal {
     }
 
     setupWebSocketHandlers() {
+        const ws = this.ws;
         this.ws.onmessage = (event) => {
+            if (ws !== this.ws) return;
             const msg = JSON.parse(event.data);
             
             switch(msg.type) {
@@ -573,6 +612,7 @@ class BBSTerminal {
                         if (charsetEl) {
                             charsetEl.value = msg.charset;
                         }
+                        this.applyCharsetWidths(msg.charset);
                         // Mid-session flips only sync the dropdown; writing or resizing
                         // here would corrupt the BBS screen
                         if (!this.awaitingCharset) break;
@@ -595,6 +635,7 @@ class BBSTerminal {
         };
 
         this.ws.onerror = (error) => {
+            if (ws !== this.ws) return;
             console.error('WebSocket error:', error);
             this.terminal.writeln('\x1b[31mConnection error\x1b[0m');
             this.updateStatus('Disconnected', 'disconnected');
@@ -609,6 +650,7 @@ class BBSTerminal {
         };
 
         this.ws.onclose = () => {
+            if (ws !== this.ws) return;
             if (this.isConnected) {
                 this.terminal.writeln('\x1b[33mConnection lost\x1b[0m');
             }
@@ -649,11 +691,6 @@ class BBSTerminal {
             this.setCurrentBBSInfo({ name: `${host}:${port}`, host, port, protocol });
         }
 
-        // Disconnect any existing connection
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.close();
-        }
-
         this.updateStatus('Connecting...', 'warning');
         
         // Show disconnect button
@@ -667,13 +704,11 @@ class BBSTerminal {
         const reconnectBtn = document.getElementById('reconnect-btn-header');
         if (reconnectBtn) reconnectBtn.style.display = 'none';
 
-        // Connect WebSocket
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-        
-        this.ws = new WebSocket(wsUrl);
+        // Connect WebSocket, replacing any existing connection
+        const ws = this.openSocket();
 
         this.ws.onopen = () => {
+            if (ws !== this.ws) return;
             this.terminal.clear();
             this.terminal.writeln(`\x1b[33mConnecting to ${protocol}://${host}:${port}...\x1b[0m`);
             // Fresh decoder per connection
