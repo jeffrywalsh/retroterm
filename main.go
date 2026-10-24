@@ -144,6 +144,10 @@ type Client struct {
     // PETSCII CR already emitted CRLF; swallow an LF that follows, even in the next read
     petsciiLastCR bool
 
+    // An incomplete telnet command at the end of a read, finished by the
+    // next one (read loop only)
+    telnetCarry []byte
+
     // PETSCII/ATASCII: bytes held for the next read (an incomplete escape
     // sequence, or an ATASCII CR that may start a CRLF)
     legacyCarry []byte
@@ -751,12 +755,26 @@ func (c *Client) processTelnetData(data []byte) []byte {
         TELQUAL_SEND = 1
     )
 
+	if len(c.telnetCarry) > 0 {
+		data = append(c.telnetCarry, data...)
+		c.telnetCarry = nil
+	}
+
 	var clean []byte
 	var response []byte
 	i := 0
 
 	for i < len(data) {
         if data[i] == IAC {
+            if telnetIncomplete(data[i:]) {
+                // Split across reads: finish it with the next read rather than
+                // dropping it and showing the rest as text. A subnegotiation
+                // that never ends is dropped once it outgrows the limit.
+                if len(data)-i <= maxTelnetCarry {
+                    c.telnetCarry = append([]byte(nil), data[i:]...)
+                }
+                break
+            }
             if i+1 < len(data) {
                 if data[i+1] == IAC {
                     // Escaped IAC
@@ -812,12 +830,8 @@ func (c *Client) processTelnetData(data []byte) []byte {
                     }
                     i += 3
                 } else if data[i+1] == SB {
-                    // Handle subnegotiation
+                    // Handle subnegotiation (complete: see telnetIncomplete)
                     j := i + 2
-                    if j >= len(data) {
-                        i += 2
-                        continue
-                    }
                     opt := data[j]
                     j++
                     // Capture until IAC SE
@@ -852,10 +866,6 @@ func (c *Client) processTelnetData(data []byte) []byte {
                         }
                         j++
                     }
-                    if j >= len(data)-1 {
-                        // Unterminated SB, drop remainder
-                        i = j
-                    }
                 } else {
                     i += 2
                 }
@@ -879,6 +889,26 @@ func (c *Client) processTelnetData(data []byte) []byte {
     }
 
     return clean
+}
+
+// maxTelnetCarry bounds how much of an unfinished telnet command is held
+// for the next read
+const maxTelnetCarry = 1024
+
+// telnetIncomplete reports whether data, which starts with IAC, ends before
+// the command does: a lone IAC, WILL/WONT/DO/DONT without its option, or a
+// subnegotiation without its IAC SE.
+func telnetIncomplete(data []byte) bool {
+    if len(data) < 2 {
+        return true
+    }
+    switch cmd := data[1]; {
+    case cmd >= 251 && cmd <= 254: // WILL, WONT, DO, DONT
+        return len(data) < 3
+    case cmd == 250: // SB
+        return len(data) < 3 || !bytes.Contains(data[3:], []byte{255, 240})
+    }
+    return false
 }
 
 // joinANSIChunks concatenates carry+chunk and returns (emit, rest) where emit contains
