@@ -16,6 +16,7 @@ class BBSTerminal {
         this._indeterminateActive = false;
         this.currentBBS = null;
         this.lastConnection = null;
+        this.awaitingCharset = false;
         this.music = null;
         // fullscreen state removed
         
@@ -27,6 +28,61 @@ class BBSTerminal {
 
         // Expose debug helpers for hexdumps via console
         this.installDebugDumpHelpers();
+
+        // Auto-connect WebSocket for replay and other features
+        this.connectWebSocket();
+    }
+
+    // Minimal WS connect used for TEST_MODE Fake Connect (no telnet/ssh connect)
+    connectWebSocket() {
+        if (this.ws && this.ws.readyState === WebSocket.OPEN) return;
+        const ws = this.openSocket();
+        this.ws.onopen = () => {
+            if (ws !== this.ws) return;
+            this.updateStatus('Connected', 'connected');
+            // Initialize Zmodem if available (harmless; may do nothing)
+            if (typeof ZmodemIntegration !== 'undefined') {
+                try {
+                    this.zmodem = new ZmodemIntegration(this.terminal, this.ws);
+                } catch {}
+            }
+        };
+        this.setupWebSocketHandlers();
+    }
+
+    // Opens a fresh WebSocket, closing any previous one. Handlers check that
+    // their socket is still this.ws, so a late close or error from the old
+    // socket cannot reset the UI of the session that replaced it.
+    openSocket() {
+        const old = this.ws;
+        this.ws = null;
+        if (old && (old.readyState === WebSocket.OPEN || old.readyState === WebSocket.CONNECTING)) {
+            old.close();
+        }
+        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        this.ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        return this.ws;
+    }
+
+    // Shows the session's charset in the header and selects its column
+    // widths (see the 'dbcs' provider)
+    applyCharset(charset) {
+        const modeEl = document.getElementById('terminal-mode');
+        if (modeEl) {
+            const names = {
+                CP437: 'ANSI', 'ISO-8859-1': 'Latin-1', BIG5: 'Big5',
+                PETSCIIU: 'PETSCII', PETSCIIL: 'PETSCII'
+            };
+            modeEl.textContent = names[charset] || charset;
+            const select = document.getElementById('charset');
+            const option = select && Array.from(select.options).find((o) => o.value === charset);
+            modeEl.title = option ? option.textContent : charset;
+        }
+        try {
+            const dbcs = charset === 'BIG5' || charset === 'GBK';
+            this.terminal.unicode.activeVersion = dbcs ? 'dbcs' : this.defaultUnicodeVersion;
+        } catch (e) {
+        }
     }
 
     async loadConfig() {
@@ -34,6 +90,27 @@ class BBSTerminal {
             const response = await fetch('/api/config');
             const config = await response.json();
             this.allowManualConnection = false; // Always false now, no manual connections
+            this.testMode = !!config.testMode;
+            if (this.testMode) {
+                const btn = document.getElementById('fake-connect-btn');
+                if (btn) {
+                    btn.style.display = 'inline-block';
+                    btn.addEventListener('click', () => {
+                        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                            this.terminal.writeln('\x1b[36mPlaying captured test stream...\x1b[0m');
+                            this.ws.send(JSON.stringify({ type: 'playCapture' }));
+                        } else {
+                            this.terminal.writeln('\x1b[33mNot connected — opening WS...\x1b[0m');
+                            this.connectWebSocket();
+                            setTimeout(() => {
+                                if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                                    this.ws.send(JSON.stringify({ type: 'playCapture' }));
+                                }
+                            }, 500);
+                        }
+                    });
+                }
+            }
         } catch (error) {
             console.error('Failed to load config:', error);
         }
@@ -80,7 +157,6 @@ class BBSTerminal {
             }
             const hex = codes.join(' ');
             const out = { row, text, hex };
-            console.log('dumpLine', out);
             return out;
         };
 
@@ -113,7 +189,6 @@ class BBSTerminal {
                 }
                 lines.push({ row: ry, text: text.join(''), hex: hex.join(' ') });
             }
-            console.log('dumpRegion', { r1, c1, r2, c2, lines });
             return { r1, c1, r2, c2, lines };
         };
     }
@@ -122,8 +197,9 @@ class BBSTerminal {
         this.terminal = new Terminal({
             cursorBlink: true,
             fontSize: this.fontSize,
-            // Original system monospace stack
-            fontFamily: 'Courier New, Courier, monospace',
+            // Prefer a font with PETSCII/ATASCII glyph coverage (see static/fonts)
+            // Fallback to standard monospace if unavailable
+            fontFamily: 'RetroTermLegacy, Courier New, Courier, monospace',
             
             // Match the classic IBM PC VGA 16-color palette for ANSI art accuracy
             drawBoldTextInBrightColors: true,
@@ -154,8 +230,22 @@ class BBSTerminal {
             },
             cols: this.currentSize.cols,
             rows: this.currentSize.rows,
-            scrollback: 10000
+            scrollback: 10000,
+            // Needed for the Big5/GBK width provider below
+            allowProposedApi: true
         });
+        // Big5/GBK boards lay out every double-byte character as two
+        // columns, including box drawing and symbols that Unicode leaves
+        // single or ambiguous width; the server only sends non-ASCII text
+        // decoded from double-byte pairs in those sessions
+        try {
+            this.terminal.unicode.register({
+                version: 'dbcs',
+                wcwidth: (cp) => cp < 0x20 ? 0 : cp < 0x80 ? 1 : 2
+            });
+            this.defaultUnicodeVersion = this.terminal.unicode.activeVersion;
+        } catch (e) {
+        }
 
         const container = document.getElementById('terminal-container');
         const terminalDiv = document.createElement('div');
@@ -170,7 +260,6 @@ class BBSTerminal {
             const webglAddon = new WebglAddon.WebglAddon();
             this.terminal.loadAddon(webglAddon);
         } catch (e) {
-            if (window.DEBUG) console.log('WebGL not available, using canvas renderer');
         }
 
         // FitAddon for responsive/mobile fitting
@@ -178,7 +267,6 @@ class BBSTerminal {
             this.fitAddon = new FitAddon.FitAddon();
             this.terminal.loadAddon(this.fitAddon);
         } catch (e) {
-            if (window.DEBUG) console.warn('FitAddon not available');
         }
 
         this.terminal.writeln('\x1b[1;32mRetroTerm Ready\x1b[0m');
@@ -267,12 +355,24 @@ class BBSTerminal {
         if (charsetSel) {
             charsetSel.addEventListener('change', (e) => {
                 const newCharset = e.target.value || 'CP437';
+                this.applyCharset(newCharset);
                 // Persist preference
                 this.saveSettings();
                 // Inform server if connected so future data path updates
                 if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                     this.ws.send(JSON.stringify({ type: 'setCharset', charset: newCharset }));
                     this.terminal.writeln(`\x1b[36mSwitched character encoding to: ${newCharset}\x1b[0m`);
+                }
+                // Auto-resize based on charset
+                const sel = document.getElementById('terminal-size');
+                if (newCharset === 'PETSCIIU' || newCharset === 'PETSCIIL' || newCharset === 'ATASCII') {
+                    // PETSCII/ATASCII: 40x25 for authenticity
+                    if (sel) sel.value = '40x25';
+                    this.resizeTerminal(40, 25);
+                } else {
+                    // CP437/CP866/UTF-8: 80x25 standard
+                    if (sel) sel.value = '80x25';
+                    this.resizeTerminal(80, 25);
                 }
             });
         }
@@ -347,26 +447,23 @@ class BBSTerminal {
         if (disconnectBtn) disconnectBtn.disabled = false;
 
         // Connect WebSocket
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        this.ws = new WebSocket(`${wsProtocol}//${window.location.host}/ws`);
+        const ws = this.openSocket();
 
         this.ws.onopen = () => {
+            if (ws !== this.ws) return;
             this.terminal.clear();
             this.terminal.writeln(`\x1b[33mConnecting to ${protocol}://${host}:${port}...\x1b[0m`);
-            this.terminal.writeln(`\x1b[36mCharacter encoding: ${charset}\x1b[0m`);
+            // Charset is determined by server based on BBS configuration
             
             // Initialize Zmodem if available
             if (typeof ZmodemIntegration !== 'undefined') {
                 try {
                     this.zmodem = new ZmodemIntegration(this.terminal, this.ws);
                     this.terminal.writeln(`\x1b[32mZmodem file transfer enabled\x1b[0m`);
-                    console.log('Zmodem initialized successfully');
                 } catch (e) {
-                    console.error('Zmodem init failed:', e);
                     this.terminal.writeln(`\x1b[31mZmodem initialization failed\x1b[0m`);
                 }
             } else {
-                if (window.DEBUG) console.warn('ZmodemIntegration not found - Zmodem disabled');
                 this.terminal.writeln(`\x1b[33mZmodem file transfer not available\x1b[0m`);
             }
             
@@ -391,12 +488,16 @@ class BBSTerminal {
     }
 
     setupWebSocketHandlers() {
+        const ws = this.ws;
         this.ws.onmessage = (event) => {
+            if (ws !== this.ws) return;
             const msg = JSON.parse(event.data);
             
             switch(msg.type) {
                 case 'connected':
                     this.isConnected = true;
+                    // Server follows 'connected' with the session's initial charset
+                    this.awaitingCharset = true;
                     this.updateStatus('Connected', 'connected');
                     this.terminal.writeln(`\x1b[32m${msg.message}\x1b[0m`);
                     document.getElementById('disconnect-btn-header').style.display = 'inline-block';
@@ -412,10 +513,15 @@ class BBSTerminal {
                 case 'data':
                     let bytes;
                     if (msg.encoding === 'base64') {
-                        const decoded = atob(msg.data);
-                        bytes = new Uint8Array(decoded.length);
-                        for (let i = 0; i < decoded.length; i++) {
-                            bytes[i] = decoded.charCodeAt(i);
+                        try {
+                            const decoded = atob(msg.data);
+                            bytes = new Uint8Array(decoded.length);
+                            for (let i = 0; i < decoded.length; i++) {
+                                bytes[i] = decoded.charCodeAt(i);
+                            }
+                        } catch (e) {
+                            console.error('Base64 decode error:', e, 'data length:', msg.data?.length);
+                            break;
                         }
                     } else if (typeof msg.data === 'string') {
                         // Treat plain string as UTF-8 text
@@ -474,7 +580,6 @@ class BBSTerminal {
                 
                 case 'fileDownload':
                     // Complete file download from server
-                    if (window.DEBUG) console.log('Received fileDownload message for:', msg.message);
                     this.completeDownload(msg.message, msg.data);
                     break;
                     
@@ -502,10 +607,47 @@ class BBSTerminal {
                         directoryManager.setConnectionStatus(false);
                     }
                     break;
+
+
+                case 'status':
+                    // Display status messages
+                    if (msg.message) {
+                        this.updateStatus(msg.message, 'info');
+                    }
+                    break;
+
+                case 'charset':
+                    // Server reports charset on connect, and again when the BBS
+                    // flips PETSCII case mode (0x0E/0x8E) mid-session
+                    if (msg.charset) {
+                        const charsetEl = document.getElementById('charset');
+                        if (charsetEl) {
+                            charsetEl.value = msg.charset;
+                        }
+                        this.applyCharset(msg.charset);
+                        // Mid-session flips only sync the dropdown; writing or resizing
+                        // here would corrupt the BBS screen
+                        if (!this.awaitingCharset) break;
+                        this.awaitingCharset = false;
+                        // Auto-resize based on detected charset
+                        const sizeEl = document.getElementById('terminal-size');
+                        if (msg.charset === 'PETSCIIU' || msg.charset === 'PETSCIIL' || msg.charset === 'ATASCII') {
+                            // PETSCII/ATASCII: 40x25 for authenticity
+                            if (sizeEl) sizeEl.value = '40x25';
+                            this.resizeTerminal(40, 25);
+                        } else {
+                            // CP437/CP866/UTF-8: 80x25 standard
+                            if (sizeEl) sizeEl.value = '80x25';
+                            this.resizeTerminal(80, 25);
+                        }
+                        this.terminal.writeln(`\x1b[36mCharset: ${msg.charset}\x1b[0m`);
+                    }
+                    break;
             }
         };
 
         this.ws.onerror = (error) => {
+            if (ws !== this.ws) return;
             console.error('WebSocket error:', error);
             this.terminal.writeln('\x1b[31mConnection error\x1b[0m');
             this.updateStatus('Disconnected', 'disconnected');
@@ -520,6 +662,7 @@ class BBSTerminal {
         };
 
         this.ws.onclose = () => {
+            if (ws !== this.ws) return;
             if (this.isConnected) {
                 this.terminal.writeln('\x1b[33mConnection lost\x1b[0m');
             }
@@ -549,7 +692,6 @@ class BBSTerminal {
 
     // Direct connection method that doesn't require form elements
     directConnect(host, port, protocol = 'telnet', username = '', password = '', charset = 'CP437') {
-        if (window.DEBUG) console.log('directConnect called:', { host, port, protocol, charset });
         
         if (!host || !port) {
             this.terminal.writeln('\x1b[31mError: Host and port are required\x1b[0m');
@@ -559,11 +701,6 @@ class BBSTerminal {
         // Ensure header shows at least host:port if name wasn't set by directory
         if (!this.currentBBS || !this.currentBBS.name) {
             this.setCurrentBBSInfo({ name: `${host}:${port}`, host, port, protocol });
-        }
-
-        // Disconnect any existing connection
-        if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-            this.ws.close();
         }
 
         this.updateStatus('Connecting...', 'warning');
@@ -579,17 +716,13 @@ class BBSTerminal {
         const reconnectBtn = document.getElementById('reconnect-btn-header');
         if (reconnectBtn) reconnectBtn.style.display = 'none';
 
-        // Connect WebSocket
-        const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        const wsUrl = `${wsProtocol}//${window.location.host}/ws`;
-        
-        this.ws = new WebSocket(wsUrl);
-        
+        // Connect WebSocket, replacing any existing connection
+        const ws = this.openSocket();
+
         this.ws.onopen = () => {
-            if (window.DEBUG) console.log('WebSocket connected, sending connect command');
+            if (ws !== this.ws) return;
             this.terminal.clear();
             this.terminal.writeln(`\x1b[33mConnecting to ${protocol}://${host}:${port}...\x1b[0m`);
-            this.terminal.writeln(`\x1b[36mCharacter encoding: ${charset}\x1b[0m`);
             // Fresh decoder per connection
             this.decoder = new TextDecoder('utf-8');
             // lastConnection and button already set above
@@ -599,13 +732,10 @@ class BBSTerminal {
                 try {
                     this.zmodem = new ZmodemIntegration(this.terminal, this.ws);
                     this.terminal.writeln(`\x1b[32mZmodem file transfer enabled\x1b[0m`);
-                    if (window.DEBUG) console.log('Zmodem initialized successfully');
                 } catch (e) {
-                    console.error('Zmodem init failed:', e);
                     this.terminal.writeln(`\x1b[31mZmodem initialization failed\x1b[0m`);
                 }
             } else {
-                if (window.DEBUG) console.warn('ZmodemIntegration not found - Zmodem disabled');
                 this.terminal.writeln(`\x1b[33mZmodem file transfer not available\x1b[0m`);
             }
             
@@ -628,14 +758,12 @@ class BBSTerminal {
             this.terminal.writeln('\x1b[33mNo previous connection to reconnect.\x1b[0m');
             return;
         }
-        const charsetEl = document.getElementById('charset');
-        const charset = (charsetEl && charsetEl.value) ? charsetEl.value : this.lastConnection.charset || 'CP437';
+        // Let server determine charset based on BBS
         const { host, port, protocol, username, password } = this.lastConnection;
-        this.directConnect(host, port, protocol || 'telnet', username || '', password || '', charset);
+        this.directConnect(host, port, protocol || 'telnet', username || '', password || '', '');
     }
 
     disconnect() {
-        if (window.DEBUG) console.log('Disconnect called - current status:', this.isConnected);
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({ type: 'disconnect' }));
             this.ws.close();
@@ -657,7 +785,6 @@ class BBSTerminal {
         if (typeof directoryManager !== 'undefined') {
             directoryManager.setConnectionStatus(false);
         }
-        if (window.DEBUG) console.log('Disconnect complete - new status:', this.isConnected);
     }
 
     resizeTerminal(cols, rows) {
@@ -669,7 +796,7 @@ class BBSTerminal {
         if (terminalDimensions) {
             terminalDimensions.textContent = `${cols}×${rows}`;
         }
-        
+
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             this.ws.send(JSON.stringify({
                 type: 'resize',
@@ -677,7 +804,7 @@ class BBSTerminal {
                 rows: rows
             }));
         }
-        
+
         this.saveSettings();
     }
 
@@ -815,7 +942,6 @@ class BBSTerminal {
                 }
             }
         } catch (e) {
-            if (window.DEBUG) console.warn('Fit failed', e);
         }
     }
 
@@ -991,6 +1117,7 @@ class BBSTerminal {
 document.addEventListener('DOMContentLoaded', async () => {
     window.bbsTerminal = new BBSTerminal();
 
+
     // Check for BBS slug in URL path
     const path = window.location.pathname;
     const pathParts = path.split('/').filter(part => part);
@@ -1005,7 +1132,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (response.ok) {
                 const bbs = await response.json();
 
-                // Auto-connect to the BBS
+                // Auto-connect to the BBS once the terminal is ready
                 setTimeout(() => {
                     window.bbsTerminal.connectToBBS(
                         bbs.host,
@@ -1016,12 +1143,11 @@ document.addEventListener('DOMContentLoaded', async () => {
                         bbs.encoding || 'CP437'
                     );
 
-                    // Update the current BBS display
                     const currentBBSElement = document.getElementById('current-bbs');
                     if (currentBBSElement) {
                         currentBBSElement.textContent = bbs.name;
                     }
-                }, 500); // Small delay to ensure terminal is ready
+                }, 500);
             }
         } catch (error) {
             console.error('Error fetching BBS by slug:', error);

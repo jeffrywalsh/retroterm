@@ -13,6 +13,31 @@
 }
 
 /* Removed custom DOS/VGA font-face to use original system fonts */
+/* Legacy terminal font (optional): place a PETSCII-capable font at static/fonts/unifont.woff2 */
+@font-face {
+    font-family: 'RetroTermLegacy';
+    src: url('/fonts/unifont-17.0.01.otf') format('opentype');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+    unicode-range: U+0000-00FF, U+2500-259F, U+1FB00-1FBFF;
+}
+
+/* Optional SMP (Plane 1) coverage when split Unifont is used */
+@font-face {
+    font-family: 'RetroTermLegacy';
+    src: url('/fonts/unifont_upper-17.0.01.otf') format('opentype');
+    font-weight: normal;
+    font-style: normal;
+    font-display: swap;
+    unicode-range: U+10000-1FFFF, U+1FB00-1FBFF;
+}
+
+/* Use consistent monospace font for proper character alignment */
+#terminal-container, .xterm, .xterm-helpers {
+    font-family: 'Courier New', 'Courier', monospace !important;
+    font-weight: normal !important;
+}
 
 * {
     margin: 0;
@@ -557,6 +582,8 @@ body.mobile-mode #terminal-container .terminal {
 .xterm {
     font-family: 'Courier New', 'Courier', monospace !important;
     font-variant-ligatures: none;
+    font-weight: normal !important;
+    line-height: 1.2 !important;
 }
 
 .xterm-viewport {
@@ -565,6 +592,15 @@ body.mobile-mode #terminal-container .terminal {
 
 .xterm-screen {
     background-color: #000 !important;
+}
+
+/* Ensure no bold or font-weight variations in terminal */
+.xterm .xterm-bold {
+    font-weight: normal !important;
+}
+
+.xterm span {
+    font-weight: normal !important;
 }
 
 /* Scrollbar */

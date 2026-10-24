@@ -7,21 +7,33 @@
 # Allow the current working set of files
 !LICENSE
 !README.md
-!ansi_enhanced.go
-!api.go
 !bbs.csv
-!bbs_directory.go
-!config.go
 !config.json
-!cp437_enhanced.go
-!ansi_music.go
-!directory_handlers.go
 !go.mod
 !go.sum
+
+# Go source files
+!ansi_enhanced.go
+!ansi_music.go
+!api.go
+!bbs_directory.go
+!capture_manager.go
+!config.go
+!cp437_enhanced.go
+!cp866.go
+!directory_handlers.go
+!legacy_processors.go
 !main.go
+!petscii_atascii.go
 !proxy.go
 !slug.go
 !zmodem_lrzsz.go
+!bbs_probe_test.go
+!decoders_test.go
+!cjk.go
+
+# Charset configuration
+!charset_bbs.csv
 
 # Allow the static directory itself, but only whitelist specific files inside
 !static/
@@ -44,6 +56,14 @@
 !.github/
 !.github/workflows/
 !.github/workflows/ci.yml
+
+# Allow verification scripts
+!verify_ansi_fix.sh
+
+# Allow references directory for documentation
+!references/
+!references/*.md
+!references/*.txt
 
 # By default, everything else remains ignored
 # Local debug artifacts

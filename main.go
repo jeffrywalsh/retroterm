@@ -100,8 +100,12 @@ type Client struct {
     sshSession     *ssh.Session    // SSH session (if using SSH)
     sshIn          io.WriteCloser  // SSH session stdin
     mu             sync.Mutex    // Protects concurrent access
+    // Serializes output to the browser: the read loop, the preamble flush
+    // timer and charset changes. Taken before mu. Guards the decode state
+    // (preamble, legacy, petsciiLastCR, dbcs).
+    outMu          sync.Mutex
     done           chan bool     // Signals connection closure
-    charset        string        // Character set for conversion
+    charset        string        // Character set for conversion; written with outMu and mu held
     zmodemReceiver ZmodemHandler // Active Zmodem handler
     ansiEnhanced   *ANSIEnhancedProcessor // Enhanced ANSI processor
     // Pre-transfer suppression to avoid displaying binary data
@@ -126,6 +130,32 @@ type Client struct {
 
     // ANSI music processor (CSI | sequences)
     music *AnsiMusicProcessor
+    // Simple autodetect state to avoid flapping
+    // Once we switch from CP437 to a legacy charset, we won't auto-switch again
+    // unless explicitly changed by the user.
+    // Legacy preamble suppression (buffer until first clear/home)
+    preambleActive bool
+    preambleBuf    []byte
+    preambleStart  time.Time
+
+    // Track last notified charset to detect dynamic changes
+    lastNotifiedCharset string
+
+    // PETSCII CR already emitted CRLF; swallow an LF that follows, even in the next read
+    petsciiLastCR bool
+
+    // An incomplete telnet command at the end of a read, finished by the
+    // next one (read loop only)
+    telnetCarry []byte
+
+    // PETSCII/ATASCII: bytes held for the next read (an incomplete escape
+    // sequence, or an ATASCII CR that may start a CRLF)
+    legacyCarry []byte
+    // A PETSCII/ATASCII byte has arrived; ASCII text no longer passes through
+    legacySeen bool
+
+    // Big5/GBK decoder; holds a split character across reads (read loop only)
+    dbcs *dbcsDecoder
 }
 
 // Global list of approved BBSes (loaded from both config and bbs.json)
@@ -177,6 +207,8 @@ func refreshApprovedBBSList() error {
     if entries, err := GetBBSDirectoryEntries(); err == nil && len(entries) > 0 {
         list := make([]BBSInfo, 0, len(entries))
         for _, e := range entries {
+            // No BBS-specific overrides; let client auto-detect if desired
+            enc := e.Encoding
             list = append(list, BBSInfo{
                 ID:          e.ID,
                 Name:        e.Name,
@@ -184,7 +216,7 @@ func refreshApprovedBBSList() error {
                 Port:        e.Port,
                 Protocol:    strings.ToLower(e.Protocol),
                 Description: e.Description,
-                Encoding:    e.Encoding,
+                Encoding:    enc,
                 Location:    e.Location,
             })
         }
@@ -265,14 +297,12 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return nil
 	})
 
-    // Check for debug mode from environment
-    debugMode := os.Getenv("ANSI_DEBUG") == "true"
     
     client := &Client{
         ws:           conn,
-        done:         make(chan bool),
+        done:         make(chan bool, 1), // Buffered to prevent goroutine leak
         charset:      "CP437",
-        ansiEnhanced: NewANSIEnhancedProcessor(debugMode),
+        ansiEnhanced: NewANSIEnhancedProcessor(false),
         termCols:     80,
         termRows:     25,
         cursorRow:    1,
@@ -292,7 +322,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				// WriteControl may run concurrently with sendJSON's writes;
+				// WriteMessage may not (gorilla panics on concurrent writers)
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
 					return
 				}
 			case <-client.done:
@@ -324,12 +356,15 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 					log.Printf("SECURITY: failed to refresh approved list: %v", err)
 				}
 			}
-			for _, bbs := range ApprovedBBSList {
+			var matchedBBS *BBSInfo
+			for i := range ApprovedBBSList {
+				bbs := &ApprovedBBSList[i]
 				// Case-insensitive host comparison and exact port/protocol match
 				if strings.EqualFold(bbs.Host, msg.Host) &&
 					bbs.Port == msg.Port &&
 					strings.EqualFold(bbs.Protocol, msg.Protocol) {
 					isApproved = true
+					matchedBBS = bbs
 					log.Printf("SECURITY: Approved connection to %s://%s:%d", msg.Protocol, msg.Host, msg.Port)
 					break
 				}
@@ -341,9 +376,17 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				client.sendMessage("error", "Connection blocked: Host not in approved list")
 				continue
 			}
-			if msg.Charset != "" {
-				client.charset = msg.Charset
-			}
+            // Determine charset: message override > BBS entry > default CP437
+            charsetToUse := msg.Charset
+            if charsetToUse == "" && matchedBBS != nil && matchedBBS.Encoding != "" {
+                charsetToUse = matchedBBS.Encoding
+                // log.Printf("Using charset from BBS entry: %s", charsetToUse)
+            }
+            if charsetToUse == "" {
+                charsetToUse = "CP437" // Default to CP437
+                // log.Printf("Using default charset: CP437")
+            }
+            client.setCharsetAndAdjust(charsetToUse)
             if msg.Protocol == "telnet" {
                 go client.connectTelnet(msg.Host, msg.Port)
             } else if msg.Protocol == "ssh" {
@@ -361,7 +404,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
             _ = sshSession.WindowChange(msg.Rows, msg.Cols)
         }
         // Accept only fixed BBS-friendly sizes for telnet NAWS
-        if (msg.Cols == 80 && msg.Rows == 25) || (msg.Cols == 100 && msg.Rows == 31) {
+        if (msg.Cols == 40 && (msg.Rows == 24 || msg.Rows == 25)) || (msg.Cols == 80 && msg.Rows == 25) || (msg.Cols == 100 && msg.Rows == 31) {
             client.mu.Lock()
             client.termCols = msg.Cols
             client.termRows = msg.Rows
@@ -372,18 +415,22 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
                 client.sendTelnetNAWS()
             }
         }
-		case "setCharset":
-			client.charset = msg.Charset
-		case "getBBSList":
-			client.sendBBSList()
-		case "connectToBBS":
-			// SECURITY: This message type only uses pre-approved BBS IDs
-			log.Printf("SECURITY: BBS connection via ID: %s", msg.BBSID)
-			client.connectToBBS(msg.BBSID)
-		case "cancelDownload":
-			if client.zmodemReceiver != nil {
-				client.zmodemReceiver.Cancel()
-			}
+        case "setCharset":
+            client.setCharsetAndAdjust(msg.Charset)
+            // Also update lastNotifiedCharset to prevent spurious notifications
+            client.mu.Lock()
+            client.lastNotifiedCharset = msg.Charset
+            client.mu.Unlock()
+        case "getBBSList":
+            client.sendBBSList()
+        case "connectToBBS":
+            // SECURITY: This message type only uses pre-approved BBS IDs
+            log.Printf("SECURITY: BBS connection via ID: %s", msg.BBSID)
+            client.connectToBBS(msg.BBSID)
+        case "cancelDownload":
+            if client.zmodemReceiver != nil {
+                client.zmodemReceiver.Cancel()
+            }
         case "disconnect":
             client.disconnect()
             return
@@ -404,10 +451,13 @@ func (c *Client) sendBBSList() {
 func (c *Client) connectToBBS(bbsID string) {
     for _, bbs := range ApprovedBBSList {
         if bbs.ID == bbsID {
-            // Set charset from BBS config if specified
-            if bbs.Encoding != "" {
-                c.charset = bbs.Encoding
+            // Set charset from BBS config, or default to CP437
+            charsetToUse := bbs.Encoding
+            if charsetToUse == "" {
+                charsetToUse = "CP437"
             }
+            c.setCharsetAndAdjust(charsetToUse)
+            // log.Printf("Connecting to %s with charset: %s", bbs.Name, charsetToUse)
 			if bbs.Protocol == "telnet" {
 				go c.connectTelnet(bbs.Host, bbs.Port)
 			} else if bbs.Protocol == "ssh" {
@@ -438,7 +488,15 @@ func (c *Client) connectTelnet(host string, port int) {
 	c.zmodemReceiver = NewLrzszReceiver(c)
 	c.mu.Unlock()
 
+
 	c.sendMessage("connected", fmt.Sprintf("Connected to %s", address))
+
+	// Send the detected charset to the client so UI can update
+	c.mu.Lock()
+	detectedCharset := c.charset
+	c.lastNotifiedCharset = detectedCharset // Track to avoid duplicate notifications
+	c.mu.Unlock()
+	c.sendJSON(Message{Type: "charset", Charset: detectedCharset})
 
 	// Handle telnet data
 	go c.readTelnet()
@@ -478,20 +536,29 @@ func (c *Client) readTelnet() {
             // Check for Zmodem in raw data FIRST (before telnet processing)
             rawData := buffer[:n]
 
-            // Debug logging removed
+			// Get ZMODEM receiver reference under lock to avoid race conditions
+			c.mu.Lock()
+			zr := c.zmodemReceiver
+			suppressZmodem := c.suppressZmodem
+			suppressUntil := c.suppressUntil
+			c.mu.Unlock()
 
 			// Pre-suppress terminal output on first ZMODEM signature before receiver activates
-			if c.hasZmodemSignature(rawData) && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) {
-				if !c.suppressZmodem {
+			if c.hasZmodemSignature(rawData) && (zr == nil || !zr.Active()) {
+				if !suppressZmodem {
+					c.mu.Lock()
 					c.suppressZmodem = true
 					c.suppressUntil = time.Now().Add(5 * time.Second)
+					suppressZmodem = true
+					suppressUntil = c.suppressUntil
+					c.mu.Unlock()
 				}
 			}
 
 			// Feed RAW data to Zmodem receiver if available (not cleaned!)
             var cleanData []byte
-            if c.zmodemReceiver != nil {
-                if remaining, consumed := c.zmodemReceiver.ProcessData(rawData); consumed {
+            if zr != nil {
+                if remaining, consumed := zr.ProcessData(rawData); consumed {
 					// During transfer, optionally show minimal status to terminal or suppress
 					// Suppress transfer bytes from terminal output
 					if len(remaining) > 0 {
@@ -505,7 +572,7 @@ func (c *Client) readTelnet() {
 					cleanData = c.processTelnetData(rawData)
 				}
 				// If receiver is active, suppress all screen output to avoid binary noise
-				if c.zmodemReceiver.Active() {
+				if zr.Active() {
 					cleanData = nil
 				}
 			} else {
@@ -514,20 +581,28 @@ func (c *Client) readTelnet() {
 			}
 
 			// Check for Zmodem signatures and log them (once per transfer)
-			if c.hasZmodemSignature(rawData) && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) {
+			if c.hasZmodemSignature(rawData) && (zr == nil || !zr.Active()) {
 				// Log detection once per transfer to avoid spam
-				if !c.suppressZmodem || time.Since(c.suppressUntil) > 0 {
+				if !suppressZmodem || time.Since(suppressUntil) > 0 {
 					log.Println("Detected Zmodem signature in data stream")
 				}
 			}
 
 			// Clear pre-suppression if it expired or transfer became active
-			if c.suppressZmodem && (time.Now().After(c.suppressUntil) || (c.zmodemReceiver != nil && c.zmodemReceiver.Active())) {
+			if suppressZmodem && (time.Now().After(suppressUntil) || (zr != nil && zr.Active())) {
+				c.mu.Lock()
 				c.suppressZmodem = false
+				c.mu.Unlock()
 			}
 
             // Only send to terminal if not in active ZMODEM transfer and not in pre-suppression window
-            if len(cleanData) > 0 && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) && !c.suppressZmodem {
+            // Re-check suppression state under lock
+            c.mu.Lock()
+            suppressNow := c.suppressZmodem
+            zrActive := c.zmodemReceiver != nil && c.zmodemReceiver.Active()
+            c.mu.Unlock()
+            if len(cleanData) > 0 && !zrActive && !suppressNow {
+                c.outMu.Lock()
                 // ANSI Music: detect and emit events, suppressing music sequences
                 if c.music != nil {
                     if remaining, consumed := c.music.Process(cleanData); consumed {
@@ -538,39 +613,106 @@ func (c *Client) readTelnet() {
                 if os.Getenv("TERM_ANSWERS") == "true" {
                     c.handleTerminalQueries(cleanData)
                 }
-                // Process ANSI sequences with enhanced processor
-                processedData := cleanData
-                if c.ansiEnhanced != nil && os.Getenv("ANSI_NORMALIZE") != "false" {
-                    processedData = c.ansiEnhanced.ProcessANSIData(cleanData)
-                }
-                // Optional hex dump for diagnostics
-                if os.Getenv("HEX_DUMP") == "true" {
-                    c.debugHexDump("TELNET->CLIENT", processedData, 256)
-                }
-                
-                // Convert CP437 to UTF-8 if needed
-                var outputData []byte
-                if c.charset == "CP437" {
-                    utf8String := ConvertCP437ToUTF8Enhanced(processedData)
-                    outputData = []byte(utf8String)
-                } else {
-                    outputData = processedData
-                }
-
-				encoded := base64.StdEncoding.EncodeToString(outputData)
-                c.sendJSON(Message{
-                    Type:     "data",
-                    Data:     encoded,
-                    Encoding: "base64",
-                })
-
-                // Update our lightweight cursor tracker if enabled
-                if os.Getenv("CURSOR_TRACK") == "true" {
-                    c.updateCursorFrom(processedData)
-                }
+                c.renderToBrowser(cleanData)
+                c.outMu.Unlock()
             }
 		}
 	}
+}
+
+// renderToBrowser runs remote output through ANSI normalization, legacy
+// preamble buffering and charset conversion, then sends it to the browser.
+// Shared by telnet and SSH. The caller holds outMu.
+func (c *Client) renderToBrowser(data []byte) {
+    c.mu.Lock()
+    legacy := isLegacyCharset(c.charset)
+    c.mu.Unlock()
+    // Process ANSI sequences with enhanced processor (not for legacy charsets)
+    if !legacy && c.ansiEnhanced != nil && os.Getenv("ANSI_NORMALIZE") != "false" {
+        data = c.ansiEnhanced.ProcessANSIData(data)
+    }
+    // Legacy preamble suppression: buffer until clear/home or timeout
+    if legacy && c.preambleActive {
+        c.preambleBuf = append(c.preambleBuf, data...)
+        if !c.shouldFlushLegacyPreamble(data) {
+            return
+        }
+        c.preambleActive = false
+        data = c.preambleBuf
+        c.preambleBuf = c.preambleBuf[:0]
+    }
+    c.emitToBrowser(data)
+}
+
+// emitToBrowser converts processed output to UTF-8 and sends it. The caller
+// holds outMu.
+func (c *Client) emitToBrowser(processedData []byte) {
+    // Convert charset-specific bytes to UTF-8 for browser rendering
+    outputData := c.convertCharsetToOutput(processedData)
+
+    // Check if charset changed during processing (e.g., via 0x0E/0x8E) and notify UI
+    c.notifyCharsetIfChanged()
+
+    // Final output guard: normalize any CSI SGR with uppercase 'M' or lowercase 'j'
+    if bytes.Contains(outputData, []byte{0x1B, '['}) {
+        outputData = normalizeCSISGRAny(outputData)
+    }
+    if len(outputData) > 0 {
+        encoded := base64.StdEncoding.EncodeToString(outputData)
+        c.sendJSON(Message{
+            Type:     "data",
+            Data:     encoded,
+            Encoding: "base64",
+        })
+    }
+
+    // Update our lightweight cursor tracker if enabled
+    if os.Getenv("CURSOR_TRACK") == "true" {
+        c.updateCursorFrom(processedData)
+    }
+}
+
+// flushStalePreamble shows a buffered legacy preamble once its timeout has
+// passed, for boards that send a banner and then wait for a key. start
+// identifies the preamble the timer was set for.
+func (c *Client) flushStalePreamble(start time.Time) {
+    c.outMu.Lock()
+    defer c.outMu.Unlock()
+    if !c.preambleActive || !c.preambleStart.Equal(start) || len(c.preambleBuf) == 0 {
+        return
+    }
+    c.preambleActive = false
+    data := append([]byte(nil), c.preambleBuf...)
+    c.preambleBuf = c.preambleBuf[:0]
+    c.emitToBrowser(data)
+}
+
+// Helper to convert charset to output data
+func (c *Client) convertCharsetToOutput(processedData []byte) []byte {
+    var outputData []byte
+    c.mu.Lock()
+    charset := c.charset
+    c.mu.Unlock()
+    switch charset {
+    case "CP437":
+        utf8String := ConvertCP437ToUTF8Enhanced(processedData)
+        outputData = []byte(utf8String)
+    case "CP866":
+        utf8String := ConvertCP866ToUTF8(processedData)
+        outputData = []byte(utf8String)
+    case "BIG5", "GBK":
+        if c.dbcs == nil || c.dbcs.charset != charset {
+            c.dbcs = newDBCSDecoder(charset)
+        }
+        outputData = c.dbcs.Decode(processedData)
+    case "ISO-8859-1":
+        outputData = ConvertLatin1ToUTF8(processedData)
+    case "PETSCIIU", "PETSCIIL", "ATASCII":
+        outputData = c.convertLegacyToOutput(processedData)
+    default:
+        outputData = processedData
+    }
+    return outputData
 }
 
 // hasZmodemSignature heuristically detects common ZMODEM start sequences.
@@ -613,18 +755,34 @@ func (c *Client) processTelnetData(data []byte) []byte {
         TELQUAL_SEND = 1
     )
 
+	if len(c.telnetCarry) > 0 {
+		data = append(c.telnetCarry, data...)
+		c.telnetCarry = nil
+	}
+
 	var clean []byte
 	var response []byte
 	i := 0
 
 	for i < len(data) {
         if data[i] == IAC {
+            if telnetIncomplete(data[i:]) {
+                // Split across reads: finish it with the next read rather than
+                // dropping it and showing the rest as text. A subnegotiation
+                // that never ends is dropped once it outgrows the limit.
+                if len(data)-i <= maxTelnetCarry {
+                    c.telnetCarry = append([]byte(nil), data[i:]...)
+                }
+                break
+            }
             if i+1 < len(data) {
                 if data[i+1] == IAC {
                     // Escaped IAC
                     clean = append(clean, IAC)
                     i += 2
-                } else if i+2 < len(data) && data[i+1] >= SE && data[i+1] <= DONT {
+                } else if i+2 < len(data) && data[i+1] >= WILL && data[i+1] <= DONT {
+                    // Only WILL/WONT/DO/DONT carry an option byte. SB (250) falls
+                    // through to the subnegotiation branch; 240-249 are two bytes.
                     cmd := data[i+1]
                     option := data[i+2]
 
@@ -672,12 +830,8 @@ func (c *Client) processTelnetData(data []byte) []byte {
                     }
                     i += 3
                 } else if data[i+1] == SB {
-                    // Handle subnegotiation
+                    // Handle subnegotiation (complete: see telnetIncomplete)
                     j := i + 2
-                    if j >= len(data) {
-                        i += 2
-                        continue
-                    }
                     opt := data[j]
                     j++
                     // Capture until IAC SE
@@ -688,8 +842,19 @@ func (c *Client) processTelnetData(data []byte) []byte {
                             // Process TTYPE SEND
                             if opt == TELOPT_TTYPE {
                                 if len(sb) >= 1 && sb[0] == TELQUAL_SEND {
-                                    // Reply: IAC SB TTYPE IS "ansi" IAC SE
-                                    ttype := []byte{'a', 'n', 's', 'i'}
+                                    // Reply: IAC SB TTYPE IS <type> IAC SE
+                                    termType := "ansi"
+                                    c.mu.Lock()
+                                    charset := c.charset
+                                    c.mu.Unlock()
+                                    // Advertise PETSCII/ATASCII when selected
+                                    switch strings.ToUpper(charset) {
+                                    case "PETSCIIU", "PETSCIIL":
+                                        termType = "PETSCII"
+                                    case "ATASCII":
+                                        termType = "ATASCII"
+                                    }
+                                    ttype := []byte(termType)
                                     resp := []byte{IAC, SB, TELOPT_TTYPE, TELQUAL_IS}
                                     resp = append(resp, ttype...)
                                     resp = append(resp, IAC, SE)
@@ -700,10 +865,6 @@ func (c *Client) processTelnetData(data []byte) []byte {
                             break
                         }
                         j++
-                    }
-                    if j >= len(data)-1 {
-                        // Unterminated SB, drop remainder
-                        i = j
                     }
                 } else {
                     i += 2
@@ -728,6 +889,209 @@ func (c *Client) processTelnetData(data []byte) []byte {
     }
 
     return clean
+}
+
+// maxTelnetCarry bounds how much of an unfinished telnet command is held
+// for the next read
+const maxTelnetCarry = 1024
+
+// telnetIncomplete reports whether data, which starts with IAC, ends before
+// the command does: a lone IAC, WILL/WONT/DO/DONT without its option, or a
+// subnegotiation without its IAC SE.
+func telnetIncomplete(data []byte) bool {
+    if len(data) < 2 {
+        return true
+    }
+    switch cmd := data[1]; {
+    case cmd >= 251 && cmd <= 254: // WILL, WONT, DO, DONT
+        return len(data) < 3
+    case cmd == 250: // SB
+        return len(data) < 3 || !bytes.Contains(data[3:], []byte{255, 240})
+    }
+    return false
+}
+
+// joinANSIChunks concatenates carry+chunk and returns (emit, rest) where emit contains
+// only complete data up to but not including any trailing incomplete ANSI escape
+// sequences (CSI/OSC/DCS/incomplete ESC). The rest should be carried to the next call.
+func joinANSIChunks(carry, chunk []byte) ([]byte, []byte) {
+    if len(carry) == 0 {
+        // Fast path: scan chunk only; if no incomplete sequences, emit as-is
+        cut := completeAnsiCutIndex(chunk)
+        if cut == len(chunk) {
+            return chunk, nil
+        }
+        // Carry tail
+        rest := make([]byte, len(chunk[cut:]))
+        copy(rest, chunk[cut:])
+        emit := make([]byte, cut)
+        copy(emit, chunk[:cut])
+        return emit, rest
+    }
+    buf := make([]byte, 0, len(carry)+len(chunk))
+    buf = append(buf, carry...)
+    buf = append(buf, chunk...)
+    cut := completeAnsiCutIndex(buf)
+    if cut == len(buf) {
+        return buf, nil
+    }
+    emit := make([]byte, cut)
+    copy(emit, buf[:cut])
+    rest := make([]byte, len(buf[cut:]))
+    copy(rest, buf[cut:])
+    return emit, rest
+}
+
+// completeAnsiCutIndex returns the index up to which data contains only complete
+// ANSI escape sequences. If an incomplete sequence is found at the end, returns
+// the start index of that sequence.
+func completeAnsiCutIndex(buf []byte) int {
+    i := 0
+    for i < len(buf) {
+        b := buf[i]
+        if b != 0x1B { // ESC
+            i++
+            continue
+        }
+        // Need at least one more byte to classify
+        if i+1 >= len(buf) {
+            return i
+        }
+        n := buf[i+1]
+        switch n {
+        case '[': // CSI: ESC [ params final
+            j := i + 2
+            for j < len(buf) {
+                c := buf[j]
+                if c >= 0x40 && c <= 0x7E { // final
+                    j++
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            return i // incomplete CSI
+        case ']': // OSC: ESC ] ... (BEL or ESC \ terminator)
+            j := i + 2
+            for j < len(buf) {
+                if buf[j] == 0x07 { // BEL
+                    j++
+                    i = j
+                    goto next
+                }
+                if j+1 < len(buf) && buf[j] == 0x1B && buf[j+1] == '\\' {
+                    j += 2
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            return i // incomplete OSC
+        case 'P': // DCS: ESC P ... ESC \
+            j := i + 2
+            for j < len(buf) {
+                if j+1 < len(buf) && buf[j] == 0x1B && buf[j+1] == '\\' {
+                    j += 2
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            return i // incomplete DCS
+        case '7', '8', 'c', 'D', 'M', 'E':
+            // Single-char ESC sequences
+            i += 2
+        default:
+            if n >= 0x40 && n <= 0x7F {
+                // Two-char ESC <final>
+                i += 2
+            } else {
+                // Unknown/incomplete, carry ESC and beyond
+                return i
+            }
+        }
+    next:
+    }
+    return i
+}
+
+// normalizeCSISGRAny converts CSI sequences that look like SGR but end with 'M'
+// into proper 'm' (7-bit ESC[ form only), e.g. Image BBS's ESC[1;3;5;7;46M.
+// Only sequences with several parameters are changed, since Delete Line (DL)
+// takes at most one. Do not touch 0x9B here since in
+// legacy charsets (PETSCII) 0x9B is also a color code before translation.
+func normalizeCSISGRAny(in []byte) []byte {
+    if len(in) < 3 {
+        return in
+    }
+    out := make([]byte, 0, len(in))
+    for i := 0; i < len(in); i++ {
+        b := in[i]
+        // 7-bit CSI form
+        if b == 0x1B && i+1 < len(in) && in[i+1] == '[' {
+            out = append(out, 0x1B, '[')
+            // Collect params
+            j := i + 2
+            for j < len(in) {
+                c := in[j]
+                if c >= 0x40 && c <= 0x7E {
+                    // Final byte
+                    // Check if this is a private sequence (starts with ?)
+                    isPrivate := false
+                    if i+2 < len(in) && in[i+2] == '?' {
+                        isPrivate = true
+                    }
+
+                    // Only normalize non-private sequences
+                    if !isPrivate {
+                        if c == 'M' { // Uppercase M
+                            // Verify params are digits/semicolons only, with more
+                            // than one: Delete Line takes at most one, so
+                            // ESC[M and ESC[3M are real and left alone
+                            valid := false
+                            for k := i + 2; k < j; k++ {
+                                d := in[k]
+                                if d == ';' {
+                                    valid = true
+                                } else if d < '0' || d > '9' {
+                                    valid = false
+                                    break
+                                }
+                            }
+                            if valid {
+                                c = 'm'
+                            }
+                        } else if c == 'j' { // lowercase j -> J for ED
+                            // Treat as clear screen variants when digits/semicolons
+                            valid := true
+                            for k := i + 2; k < j; k++ {
+                                d := in[k]
+                                if !(d == ';' || (d >= '0' && d <= '9')) {
+                                    valid = false
+                                    break
+                                }
+                            }
+                            if valid {
+                                c = 'J'
+                            }
+                        }
+                    }
+                    out = append(out, in[i+2:j]...)
+                    out = append(out, c)
+                    i = j
+                    goto next
+                }
+                j++
+            }
+            // Incomplete CSI, copy the rest as-is and break
+            out = append(out, in[i+2:]...)
+            break
+        }
+        // Note: do not normalize 0x9B here.
+        out = append(out, b)
+    next:
+    }
+    return out
 }
 
 // buildNAWSSB constructs a NAWS SB with current fixed cols/rows
@@ -765,9 +1129,117 @@ func (c *Client) sendTelnetNAWS() {
     }
 }
 
+// setCharsetAndAdjust sets charset and adjusts NAWS to a reasonable size.
+// PETSCII/ATASCII use 40x25; ANSI/CP437/CP866/UTF-8 use 80x25.
+func (c *Client) setCharsetAndAdjust(cs string) {
+    c.outMu.Lock()
+    defer c.outMu.Unlock()
+    c.mu.Lock()
+    oldCols := c.termCols
+    oldRows := c.termRows
+    c.charset = cs
+    c.legacyCarry = nil
+    c.legacySeen = false
+    c.petsciiLastCR = false
+    switch strings.ToUpper(cs) {
+    case "PETSCIIU", "PETSCIIL", "ATASCII":
+        c.termCols = 40
+        c.termRows = 25
+        // Enable preamble suppression for legacy charsets
+        c.preambleActive = true
+        if cap(c.preambleBuf) < 8192 {
+            c.preambleBuf = make([]byte, 0, 8192)
+        } else {
+            c.preambleBuf = c.preambleBuf[:0]
+        }
+        start := time.Now()
+        c.preambleStart = start
+        // Without this, a banner followed by silence stays buffered until
+        // the board sends more
+        time.AfterFunc(legacyPreambleTimeout, func() { c.flushStalePreamble(start) })
+    default:
+        if c.termCols < 80 {
+            c.termCols = 80
+        }
+        if c.termRows < 25 {
+            c.termRows = 25
+        }
+        // Disable preamble in ANSI/CP437
+        c.preambleActive = false
+        c.preambleBuf = c.preambleBuf[:0]
+    }
+    telnetConn := c.telnet
+    telnetNAWS := c.telnetNAWS
+    c.mu.Unlock()
+    if telnetConn != nil && telnetNAWS && (oldCols != c.termCols || oldRows != c.termRows) {
+        c.sendTelnetNAWS()
+    }
+}
+
+// notifyCharsetIfChanged checks if charset has changed since last notification
+// and sends a charset message to the client UI if so.
+func (c *Client) notifyCharsetIfChanged() {
+    c.mu.Lock()
+    currentCharset := c.charset
+    lastNotified := c.lastNotifiedCharset
+    c.mu.Unlock()
+
+    if currentCharset != lastNotified && currentCharset != "" {
+        c.mu.Lock()
+        c.lastNotifiedCharset = currentCharset
+        c.mu.Unlock()
+        c.sendJSON(Message{Type: "charset", Charset: currentCharset})
+    }
+}
+
+// legacyPreambleTimeout is how long legacy output is buffered waiting for the
+// board's first clear or home.
+const legacyPreambleTimeout = 1500 * time.Millisecond
+
+// shouldFlushLegacyPreamble decides when to flush buffered legacy preamble.
+// Flush triggers on PETSCII clear (0x93) or home (0x13), ATASCII clear (0x7D),
+// or a short timeout/size threshold.
+func (c *Client) shouldFlushLegacyPreamble(chunk []byte) bool {
+    if len(chunk) == 0 {
+        return false
+    }
+    cs := strings.ToUpper(c.charset)
+    // PETSCII: clear/home
+    if cs == "PETSCIIU" || cs == "PETSCIIL" {
+        for _, b := range chunk {
+            if b == 0x93 || b == 0x13 { // CLR or HOME
+                return true
+            }
+        }
+    }
+    // ATASCII: clear screen
+    if cs == "ATASCII" {
+        for _, b := range chunk {
+            if b == 0x7D { // CLEAR
+                return true
+            }
+        }
+    }
+    // Fallbacks: time/size
+    if time.Since(c.preambleStart) >= legacyPreambleTimeout {
+        return true
+    }
+    if len(c.preambleBuf)+len(chunk) > 8192 {
+        return true
+    }
+    return false
+}
+
 // handleTerminalQueries detects DA/CPR requests in the data stream and replies
 // with conservative answers suitable for BBS detection.
 func (c *Client) handleTerminalQueries(data []byte) {
+    // Legacy sessions never answer: see stripTerminalQueries
+    c.mu.Lock()
+    legacy := isLegacyCharset(c.charset)
+    c.mu.Unlock()
+    if legacy {
+        return
+    }
     // Patterns to detect:
     //  - ESC [ 6 n (CPR request)
     //  - ESC [ c or ESC [ 0 c (Primary DA request)
@@ -846,36 +1318,6 @@ func (c *Client) sendTelnet(b []byte) {
     }
 }
 
-// debugHexDump logs up to max bytes of data with a simple hex+ASCII view
-func (c *Client) debugHexDump(label string, data []byte, max int) {
-    if len(data) == 0 {
-        return
-    }
-    if max <= 0 || max > len(data) {
-        max = len(data)
-    }
-    const per = 16
-    log.Printf("HEX %s: %d bytes (showing %d)", label, len(data), max)
-    for off := 0; off < max; off += per {
-        end := off + per
-        if end > max {
-            end = max
-        }
-        // hex bytes
-        hex := make([]byte, 0, (end-off)*3)
-        ascii := make([]byte, 0, end-off)
-        for i := off; i < end; i++ {
-            b := data[i]
-            hex = append(hex, fmt.Sprintf("%02x ", b)...)
-            if b >= 32 && b <= 126 {
-                ascii = append(ascii, b)
-            } else {
-                ascii = append(ascii, '.')
-            }
-        }
-        log.Printf("%04x: %-48s |%s|", off, string(hex), string(ascii))
-    }
-}
 
 // updateCursorFrom parses a subset of ANSI to track cursor position
 func (c *Client) updateCursorFrom(data []byte) {
@@ -885,6 +1327,8 @@ func (c *Client) updateCursorFrom(data []byte) {
     row := c.cursorRow
     col := c.cursorCol
     seq := append(c.cursorSeqBuf[:0], c.cursorSeqBuf...)
+    // UTF-8 continuation bytes do not advance the cursor
+    utf8Session := c.charset == "UTF-8"
     c.mu.Unlock()
 
     // Helper to clamp
@@ -976,7 +1420,7 @@ func (c *Client) updateCursorFrom(data []byte) {
             }
         default:
             // Printable?
-            if b >= 0x20 {
+            if b >= 0x20 && !(utf8Session && b >= 0x80 && b <= 0xBF) {
                 col++
                 if col > cols { col = cols }
             }
@@ -1066,6 +1510,13 @@ func (c *Client) connectSSH(host string, port int, username, password string) {
 
 	c.sendMessage("connected", fmt.Sprintf("Connected to %s", address))
 
+	// Send the detected charset to the client so UI can update
+	c.mu.Lock()
+	detectedCharset := c.charset
+	c.lastNotifiedCharset = detectedCharset // Track to avoid duplicate notifications
+	c.mu.Unlock()
+	c.sendJSON(Message{Type: "charset", Charset: detectedCharset})
+
 	// Handle SSH I/O
 	go c.handleSSHSession(session)
 }
@@ -1089,29 +1540,10 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
         }
 
         if n > 0 {
-            // Process ANSI normalization first
-            processed := buffer[:n]
-            if c.ansiEnhanced != nil {
-                processed = c.ansiEnhanced.ProcessANSIData(processed)
-            }
-            if os.Getenv("HEX_DUMP") == "true" {
-                c.debugHexDump("SSH->CLIENT", processed, 256)
-            }
-            // Convert CP437 to UTF-8 if needed
-            var outputData []byte
-            if c.charset == "CP437" {
-                utf8String := ConvertCP437ToUTF8Enhanced(processed)
-                outputData = []byte(utf8String)
-            } else {
-                outputData = processed
-            }
-
-            encoded := base64.StdEncoding.EncodeToString(outputData)
-            c.sendJSON(Message{
-                Type:     "data",
-                Data:     encoded,
-                Encoding: "base64",
-            })
+            // Same output pipeline as telnet
+            c.outMu.Lock()
+            c.renderToBrowser(buffer[:n])
+            c.outMu.Unlock()
         }
     }
 }
@@ -1128,18 +1560,45 @@ func (c *Client) sendToRemote(data string) {
 
     var outputData []byte
 
-	// Handle backspace - xterm.js sends ASCII DEL (127) for backspace
-	// Most BBSes expect ASCII BS (8) instead
-	dataBytes := []byte(data)
-	for i, b := range dataBytes {
-		if b == 127 { // ASCII DEL
-			dataBytes[i] = 8 // ASCII BS
-		}
-	}
+    // Handle backspace - xterm.js sends ASCII DEL (127) for backspace
+    // Most BBSes expect ASCII BS (8) instead
+    dataBytes := []byte(data)
+    for i, b := range dataBytes {
+        if b == 127 { // ASCII DEL
+            dataBytes[i] = 8 // ASCII BS
+        }
+        // In PETSCII, delete-left is 0x14, map ASCII BS to that
+        if (charset == "PETSCIIU" || charset == "PETSCIIL") && dataBytes[i] == 8 {
+            dataBytes[i] = 0x14
+        }
+    }
 
-    if charset == "CP437" && telnetConn != nil {
-        // Convert UTF-8 input to CP437 for telnet connections
-        outputData = ConvertUTF8ToCP437Enhanced(string(dataBytes))
+    // Translate common ANSI cursor keys and controls to legacy equivalents
+    if charset == "PETSCIIU" || charset == "PETSCIIL" || charset == "ATASCII" {
+        dataBytes = translateANSIInputToLegacy(dataBytes, charset)
+    }
+
+    if telnetConn != nil {
+        switch charset {
+        case "CP437":
+            // Convert UTF-8 input to CP437 for telnet connections
+            outputData = ConvertUTF8ToCP437Enhanced(string(dataBytes))
+        case "CP866":
+            // Convert UTF-8 input to CP866 for telnet connections
+            outputData = ConvertUTF8ToCP866(string(dataBytes))
+        case "BIG5", "GBK":
+            outputData = ConvertUTF8ToDBCS(charset, string(dataBytes))
+        case "ISO-8859-1":
+            outputData = ConvertUTF8ToLatin1(string(dataBytes))
+        case "PETSCIIU":
+            outputData = ConvertUTF8ToPETSCIIU(string(dataBytes))
+        case "PETSCIIL":
+            outputData = ConvertUTF8ToPETSCIIL(string(dataBytes))
+        case "ATASCII":
+            outputData = ConvertUTF8ToATASCII(string(dataBytes))
+        default:
+            outputData = dataBytes
+        }
     } else {
         outputData = dataBytes
     }
@@ -1149,6 +1608,97 @@ func (c *Client) sendToRemote(data string) {
     } else if sshIn != nil {
         _, _ = sshIn.Write(outputData)
     }
+}
+
+// translateANSIInputToLegacy maps ANSI cursor/clear sequences commonly emitted by browsers
+// to PETSCII/ATASCII control bytes expected by legacy BBS software.
+func translateANSIInputToLegacy(in []byte, charset string) []byte {
+    out := make([]byte, 0, len(in))
+    for i := 0; i < len(in); i++ {
+        b := in[i]
+        if b == 0x1B { // ESC
+            // Peek next
+            if i+1 < len(in) {
+                n := in[i+1]
+                // CSI sequences ESC [
+                if n == '[' {
+                    // Try to parse simple no-parameter sequences
+                    if i+2 < len(in) {
+                        final := in[i+2]
+                        mapped := false
+                        switch final {
+                        case 'A': // Up
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x91); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1C); mapped = true }
+                        case 'B': // Down
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x11); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1D); mapped = true }
+                        case 'C': // Right
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x1D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1F); mapped = true }
+                        case 'D': // Left
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x9D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1E); mapped = true }
+                        case 'H': // Home
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" {
+                                out = append(out, 0x13)
+                                mapped = true
+                            }
+                        case 'J': // Clear screen variants ESC[J or ESC[2J
+                            // detect optional '2' before 'J'
+                            if i+2 < len(in) && in[i+2] == '2' && i+3 < len(in) && in[i+3] == 'J' {
+                                if charset == "PETSCIIU" || charset == "PETSCIIL" {
+                                    out = append(out, 0x93)
+                                    mapped = true
+                                    i += 1 // consume extra char ('2') with 'J' handled below
+                                }
+                            } else {
+                                if charset == "PETSCIIU" || charset == "PETSCIIL" {
+                                    out = append(out, 0x93)
+                                    mapped = true
+                                }
+                            }
+                        }
+                        if mapped {
+                            // consume ESC [ X
+                            i += 2
+                            continue
+                        }
+
+                        // Try ESC [ n ~ sequences (e.g., Home/End from some keyboards)
+                        // Minimal handling: skip unknown CSI
+                    }
+                } else if n == 'O' { // SS3 sequences (ESC O A, etc.)
+                    if i+2 < len(in) {
+                        final := in[i+2]
+                        mapped := false
+                        switch final {
+                        case 'A': // Up
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x91); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1C); mapped = true }
+                        case 'B': // Down
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x11); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1D); mapped = true }
+                        case 'C': // Right
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x1D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1F); mapped = true }
+                        case 'D': // Left
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x9D); mapped = true }
+                            if charset == "ATASCII" { out = append(out, 0x1E); mapped = true }
+                        case 'H': // Home
+                            if charset == "PETSCIIU" || charset == "PETSCIIL" { out = append(out, 0x13); mapped = true }
+                        }
+                        if mapped {
+                            i += 2
+                            continue
+                        }
+                    }
+                }
+            }
+        }
+        out = append(out, b)
+    }
+    return out
 }
 
 // sendMessage is a convenience wrapper for emitting JSON messages.
@@ -1183,21 +1733,24 @@ func (c *Client) sendJSON(msg Message) {
 // disconnect tears down the session: cancels ZMODEM, closes sockets/sessions,
 // and signals the ping/pong loop to exit.
 func (c *Client) disconnect() {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-
 	// Signal done channel to stop ping ticker
 	select {
 	case c.done <- true:
 	default:
 	}
 
-	// Cancel any active ZMODEM transfer scoped to this session
-	if c.zmodemReceiver != nil {
-		c.zmodemReceiver.Cancel()
+	// Cancel any active ZMODEM transfer scoped to this session. Must run
+	// unlocked: Cancel sends the abort sequence via sendToRemote, which takes c.mu.
+	c.mu.Lock()
+	zr := c.zmodemReceiver
+	c.mu.Unlock()
+	if zr != nil {
+		zr.Cancel()
 	}
-	
-    // Hex debugger removed
+
+    c.mu.Lock()
+    defer c.mu.Unlock()
+
 
 	if c.telnet != nil {
 		c.telnet.Close()

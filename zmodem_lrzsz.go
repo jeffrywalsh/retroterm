@@ -27,6 +27,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -35,6 +36,9 @@ import (
 // process management, data routing, and file delivery.
 type LrzszReceiver struct {
 	client       *Client        // WebSocket client connection
+	// mu guards active, rzStdin, rzCmd, tempDir, startTime and lastActivity:
+	// the read loop, the rz goroutines, the watchdog and Cancel all use them
+	mu           sync.Mutex
 	active       bool           // Whether a transfer is currently active
 	tempDir      string         // Temporary directory for received files
 	rzCmd        *exec.Cmd      // The rz process handle
@@ -62,8 +66,16 @@ func NewLrzszReceiver(client *Client) *LrzszReceiver {
 // When not in a transfer, it monitors for Zmodem initiation sequences.
 // During a transfer, all raw data is piped directly to the rz process.
 func (l *LrzszReceiver) ProcessData(data []byte) ([]byte, bool) {
+	l.mu.Lock()
+	active := l.active
+	stdin := l.rzStdin
+	if active {
+		l.lastActivity = time.Now()
+	}
+	l.mu.Unlock()
+
 	// Check for Zmodem start if not active
-	if !l.active {
+	if !active {
 		// Buffer data to look for patterns
 		l.buffer = append(l.buffer, data...)
 
@@ -73,9 +85,6 @@ func (l *LrzszReceiver) ProcessData(data []byte) ([]byte, bool) {
 				l.buffer = make([]byte, 0)
 				return data, false
 			}
-			l.active = true
-			l.startTime = time.Now()
-			l.lastActivity = time.Now()
 			// Started rz for file reception
 
 			// Send notification to client
@@ -85,12 +94,15 @@ func (l *LrzszReceiver) ProcessData(data []byte) ([]byte, bool) {
 			})
 
 			// Write ALL data from the ZMODEM start to rz (important!)
-			if l.rzStdin != nil && len(l.buffer) > startIdx {
+			l.mu.Lock()
+			stdin = l.rzStdin
+			l.mu.Unlock()
+			if stdin != nil && len(l.buffer) > startIdx {
 				// Clean the stream of Telnet IAC negotiations before feeding rz
 				initial := l.buffer[startIdx:]
 				clean := l.client.processTelnetData(initial)
 				if len(clean) > 0 {
-					if _, err := l.rzStdin.Write(clean); err != nil {
+					if _, err := stdin.Write(clean); err != nil {
 						// Error writing initial buffer
 					}
 				}
@@ -110,17 +122,12 @@ func (l *LrzszReceiver) ProcessData(data []byte) ([]byte, bool) {
 	}
 
 	// If rz is active, pipe telnet data (with IAC stripped) directly to it
-	if l.active && l.rzStdin != nil {
+	if stdin != nil {
 		// Strip Telnet negotiations and unescape IAC if needed
 		clean := l.client.processTelnetData(data)
 
-		// Writing to rz stdin
-
-		// Update activity time
-		l.lastActivity = time.Now()
-
 		// Write cleaned data to rz immediately
-		if _, err := l.rzStdin.Write(clean); err != nil {
+		if _, err := stdin.Write(clean); err != nil {
 			// Error writing to rz
 			l.completeTransfer()
 			return nil, true // Consume data but end transfer
@@ -139,36 +146,48 @@ func (l *LrzszReceiver) ProcessData(data []byte) ([]byte, bool) {
 // It sends cancel sequences to the remote, terminates the rz process,
 // and removes temporary files.
 func (l *LrzszReceiver) Cancel() {
-	if !l.active {
+	stdin, cmd, tempDir, ok := l.finish()
+	if !ok {
 		return
 	}
-	// Cancelling Zmodem transfer
-	l.active = false
 	// Attempt to signal cancel to remote
 	if l.client != nil {
 		cancel := []byte{0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18}
 		l.client.sendToRemote(string(cancel))
 	}
 	// Close stdin to rz to make it exit
-	if l.rzStdin != nil {
-		_ = l.rzStdin.Close()
-		l.rzStdin = nil
+	if stdin != nil {
+		_ = stdin.Close()
 	}
 	// Kill rz process if running
-	if l.rzCmd != nil && l.rzCmd.Process != nil {
-		_ = l.rzCmd.Process.Kill()
-		l.rzCmd = nil
+	if cmd != nil && cmd.Process != nil {
+		_ = cmd.Process.Kill()
 	}
 	// Cleanup temp directory
-	if l.tempDir != "" {
-		_ = os.RemoveAll(l.tempDir)
-		l.tempDir = ""
+	if tempDir != "" {
+		_ = os.RemoveAll(tempDir)
 	}
-	l.buffer = make([]byte, 0)
+}
+
+// finish ends the transfer and hands its resources to the caller. Only the
+// first caller (Cancel, completion or the watchdog) gets them, so cleanup runs
+// once and never removes the files while they are being sent.
+func (l *LrzszReceiver) finish() (io.WriteCloser, *exec.Cmd, string, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if !l.active {
+		return nil, nil, "", false
+	}
+	l.active = false
+	stdin, cmd, tempDir := l.rzStdin, l.rzCmd, l.tempDir
+	l.rzStdin, l.rzCmd, l.tempDir = nil, nil, ""
+	return stdin, cmd, tempDir, true
 }
 
 // Active returns true if a Zmodem transfer is currently in progress
 func (l *LrzszReceiver) Active() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return l.active
 }
 
@@ -252,27 +271,25 @@ func (l *LrzszReceiver) startRz() error {
 	if err != nil {
 		return fmt.Errorf("failed to create temp dir: %w", err)
 	}
-	l.tempDir = tempDir
 	// Created temp directory
 
 	// Start rz command with appropriate options:
 	// -v: verbose mode for progress reporting
 	// -b: binary mode (8-bit clean)
 	// Note: Removed -e flag as it can interfere with Zmodem protocol
-	l.rzCmd = exec.Command("rz", "-v", "-b")
-	l.rzCmd.Dir = tempDir
+	cmd := exec.Command("rz", "-v", "-b")
+	cmd.Dir = tempDir
 	// Starting rz command
 
 	// Get stdin pipe
-	stdin, err := l.rzCmd.StdinPipe()
+	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		os.RemoveAll(tempDir)
 		return fmt.Errorf("failed to get stdin pipe: %w", err)
 	}
-	l.rzStdin = stdin
 
 	// Get stdout pipe
-	stdout, err := l.rzCmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		os.RemoveAll(tempDir)
 		return fmt.Errorf("failed to get stdout pipe: %w", err)
@@ -280,7 +297,7 @@ func (l *LrzszReceiver) startRz() error {
 	l.rzStdout = stdout
 
 	// Get stderr pipe for progress information
-	stderr, err := l.rzCmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		os.RemoveAll(tempDir)
 		return fmt.Errorf("failed to get stderr pipe: %w", err)
@@ -293,15 +310,21 @@ func (l *LrzszReceiver) startRz() error {
 	time.Sleep(100 * time.Millisecond)
 
 	// Start the command
-	if err := l.rzCmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
 		os.RemoveAll(tempDir)
 		log.Printf("Failed to start rz command: %v", err)
 		return fmt.Errorf("failed to start rz: %w", err)
 	}
 	// Started rz process
+	l.mu.Lock()
+	l.active = true
+	l.rzCmd, l.rzStdin, l.tempDir = cmd, stdin, tempDir
+	l.startTime = time.Now()
+	l.lastActivity = l.startTime
+	l.mu.Unlock()
 
 	// Monitor rz in background
-	go l.monitorRz()
+	go l.monitorRz(cmd)
 
 	// Monitor progress from stderr
 	go l.monitorProgress(stderr)
@@ -323,7 +346,7 @@ func (l *LrzszReceiver) startRz() error {
 // requestTelnetBinary sends telnet commands to enable binary mode.
 // This ensures 8-bit clean data path for Zmodem transfers.
 func (l *LrzszReceiver) requestTelnetBinary() {
-	if l.client == nil || l.client.telnet == nil {
+	if l.client == nil {
 		return
 	}
 
@@ -412,19 +435,17 @@ func (l *LrzszReceiver) monitorProgress(stderr io.ReadCloser) {
 
 // monitorRz waits for the rz process to complete and triggers cleanup.
 // This goroutine runs for the lifetime of the transfer.
-func (l *LrzszReceiver) monitorRz() {
+func (l *LrzszReceiver) monitorRz(cmd *exec.Cmd) {
 	// Wait for rz to complete
-	err := l.rzCmd.Wait()
+	err := cmd.Wait()
 	if err != nil {
 		log.Printf("rz exited with error: %v", err)
 	} else {
 		// rz completed successfully
 	}
 
-	// Trigger completion
-	if l.active {
-		l.completeTransfer()
-	}
+	// Trigger completion (a no-op if the transfer was cancelled)
+	l.completeTransfer()
 }
 
 // forwardRzStdoutToRemote bridges rz's protocol responses back to the remote BBS.
@@ -483,40 +504,39 @@ func (l *LrzszReceiver) forwardRzStdoutToRemote() {
 // It processes any received files, sends them to the browser client,
 // and cleans up all resources.
 func (l *LrzszReceiver) completeTransfer() {
-	l.active = false
-	l.buffer = make([]byte, 0)
+	stdin, cmd, tempDir, ok := l.finish()
+	if !ok {
+		return
+	}
 
 	// Close rz stdin
-	if l.rzStdin != nil {
-		l.rzStdin.Close()
-		l.rzStdin = nil
+	if stdin != nil {
+		stdin.Close()
 	}
 
 	// Give rz a moment to finish writing
 	time.Sleep(500 * time.Millisecond)
 
 	// Check for received files in temp directory
-	if l.tempDir != "" {
-		files, err := os.ReadDir(l.tempDir)
+	if tempDir != "" {
+		files, err := os.ReadDir(tempDir)
 		if err != nil {
 			log.Printf("LRZSZ: Error reading temp dir: %v", err)
 		} else {
 			for _, file := range files {
 				if !file.IsDir() {
-					l.sendFileToClient(filepath.Join(l.tempDir, file.Name()), file.Name())
+					l.sendFileToClient(filepath.Join(tempDir, file.Name()), file.Name())
 				}
 			}
 		}
 
 		// Clean up temp directory
-		os.RemoveAll(l.tempDir)
-		l.tempDir = ""
+		os.RemoveAll(tempDir)
 	}
 
 	// Kill rz if still running
-	if l.rzCmd != nil && l.rzCmd.Process != nil {
-		l.rzCmd.Process.Kill()
-		l.rzCmd = nil
+	if cmd != nil && cmd.Process != nil {
+		cmd.Process.Kill()
 	}
 }
 
@@ -528,11 +548,14 @@ func (l *LrzszReceiver) watchdogTimer() {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		if !l.active {
+		l.mu.Lock()
+		active, startTime, lastActivity := l.active, l.startTime, l.lastActivity
+		l.mu.Unlock()
+		if !active {
 			return // Transfer completed
 		}
 
-		elapsed := time.Since(l.startTime)
+		elapsed := time.Since(startTime)
 		if elapsed > maxDuration {
 			log.Printf("LRZSZ: Transfer exceeded maximum duration of %v", maxDuration)
 			l.Cancel()
@@ -540,7 +563,7 @@ func (l *LrzszReceiver) watchdogTimer() {
 		}
 
 		// Check if we're making progress
-		timeSinceLastActivity := time.Since(l.lastActivity)
+		timeSinceLastActivity := time.Since(lastActivity)
 		if timeSinceLastActivity > 90*time.Second {
 			log.Printf("LRZSZ: No activity for %v, canceling transfer", timeSinceLastActivity)
 			l.Cancel()

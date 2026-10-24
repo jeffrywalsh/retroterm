@@ -20,7 +20,7 @@ go mod download
 Build:
 
 ```bash
-go build -o retroterm .
+go build -o retroterm ./src
 ```
 
 Run:
@@ -28,7 +28,7 @@ Run:
 ```bash
 ./retroterm
 # or for quick testing
-go run .
+go run ./src
 ```
 
 The server listens on the port from `config.json` (default 8080) and serves the UI from `./static`.
@@ -41,8 +41,8 @@ The server listens on the port from `config.json` (default 8080) and serves the 
 - Missing go.sum entries: if you see errors about missing checksums, run `go mod tidy` (or `go mod download`) to sync dependencies.
 - CI/sandbox write permissions: `go build` needs writable caches. If the default cache path isn’t writable, set:
   - `GOCACHE=$(pwd)/.gocache` and `GOMODCACHE=$(pwd)/.gomodcache`
-  - Example: `GOCACHE=.gocache GOMODCACHE=.gomodcache go build -o retroterm .`
-- Optional static-ish builds: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o retroterm .` reduces size and removes debug info. Note: only use `CGO_ENABLED=0` if you don’t rely on C libraries.
+  - Example: `GOCACHE=.gocache GOMODCACHE=.gomodcache go build -o retroterm ./src`
+- Optional static-ish builds: `CGO_ENABLED=0 go build -trimpath -ldflags "-s -w" -o retroterm ./src` reduces size and removes debug info. Note: only use `CGO_ENABLED=0` if you don’t rely on C libraries.
 - Corporate proxy: export `HTTPS_PROXY`/`HTTP_PROXY` if required by your network so `go mod download` can reach upstream.
 
 ## Vendoring (optional)
@@ -58,7 +58,7 @@ If you need offline or reproducible builds without network access, vendor your d
 - Build using vendored deps (Go 1.14+ auto-detects `vendor/`; forcing is explicit):
   
   ```bash
-  go build -mod=vendor -o retroterm .
+  go build -mod=vendor -o retroterm ./src
   ```
 
 - Keep vendor in sync when dependencies change:
@@ -72,7 +72,7 @@ Notes:
 - Vendoring removes network fetches for modules, but the Go build cache still needs a writable location. If needed:
   
   ```bash
-  GOCACHE=.gocache GOMODCACHE=.gomodcache go build -mod=vendor -o retroterm .
+  GOCACHE=.gocache GOMODCACHE=.gomodcache go build -mod=vendor -o retroterm ./src
   ```
 
 

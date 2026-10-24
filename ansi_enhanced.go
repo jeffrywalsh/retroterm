@@ -2,21 +2,18 @@ package main
 
 import (
 	"bytes"
-	"log"
 )
 
 // ANSIEnhancedProcessor provides more comprehensive ANSI processing
 type ANSIEnhancedProcessor struct {
 	inSequence    bool
 	sequenceBuffer []byte
-	debugMode     bool
 }
 
 // NewANSIEnhancedProcessor creates a new enhanced processor
-func NewANSIEnhancedProcessor(debug bool) *ANSIEnhancedProcessor {
+func NewANSIEnhancedProcessor(_ bool) *ANSIEnhancedProcessor {
 	return &ANSIEnhancedProcessor{
 		sequenceBuffer: make([]byte, 0, 256),
-		debugMode:      debug,
 	}
 }
 
@@ -27,47 +24,14 @@ func (p *ANSIEnhancedProcessor) ProcessANSIData(data []byte) []byte {
     for i := 0; i < len(data); i++ {
         b := data[i]
         
-        // Normalize 8-bit C1 control codes to 7-bit ESC-prefixed sequences
-        // Common mappings: CSI (0x9B) -> ESC '[', OSC (0x9D) -> ESC ']', DCS (0x90) -> ESC 'P', ST (0x9C) -> ESC '\\'
-        if b >= 0x80 && b <= 0x9F {
-            switch b {
-            case 0x9B: // CSI
-                p.inSequence = true
-                p.sequenceBuffer = p.sequenceBuffer[:0]
-                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, '[')
-                continue
-            case 0x9D: // OSC
-                p.inSequence = true
-                p.sequenceBuffer = p.sequenceBuffer[:0]
-                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, ']')
-                continue
-            case 0x90: // DCS
-                p.inSequence = true
-                p.sequenceBuffer = p.sequenceBuffer[:0]
-                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, 'P')
-                continue
-            case 0x9C: // ST (String Terminator)
-                if p.inSequence {
-                    p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, '\\')
-                    // Will be recognized as complete by isSequenceComplete for OSC; pass through
-                    processed := p.processCompleteSequence()
-                    result = append(result, processed...)
-                    p.inSequence = false
-                    p.sequenceBuffer = p.sequenceBuffer[:0]
-                    continue
-                }
-                // Not in a sequence; emit ESC \
-                result = append(result, 0x1B, '\\')
-                continue
-            }
-        }
+        // Bytes 0x80-0x9F are NOT treated as 8-bit C1 controls: they are text in
+        // every charset this runs for (CP437 É¢£¥, CP866 Р-Я, UTF-8 continuation
+        // bytes, Big5/GBK). A probe of the whole directory found no BBS sending
+        // 8-bit CSI, but 70 whose text contains these bytes.
 
         // Handle special control characters
         switch b {
         case 0x0C: // Form Feed - clear screen and home cursor
-            if p.debugMode {
-                log.Printf("ANSI: Form feed detected, converting to ESC[2J ESC[H")
-			}
 			// Clear screen and move cursor to home
 			result = append(result, 0x1B, '[', '2', 'J')  // Clear entire screen
 			result = append(result, 0x1B, '[', 'H')       // Move cursor to home
@@ -75,17 +39,11 @@ func (p *ANSIEnhancedProcessor) ProcessANSIData(data []byte) []byte {
 			
 		case 0x0E: // Shift Out - could be used for alternate character set
 			// Pass through but log
-			if p.debugMode {
-				log.Printf("ANSI: Shift Out (0x0E) detected")
-			}
 			result = append(result, b)
 			continue
 			
 		case 0x0F: // Shift In - return to normal character set
 			// Pass through but log
-			if p.debugMode {
-				log.Printf("ANSI: Shift In (0x0F) detected")
-			}
 			result = append(result, b)
 			continue
 		}
@@ -115,11 +73,9 @@ func (p *ANSIEnhancedProcessor) ProcessANSIData(data []byte) []byte {
 		}
 	}
 	
-	// If we have an incomplete sequence at the end, append it as-is
-	if len(p.sequenceBuffer) > 0 {
-		result = append(result, p.sequenceBuffer...)
-	}
-	
+	// An incomplete sequence at the end stays buffered (inSequence) and is
+	// emitted whole once the next read completes it. Emitting it here as well
+	// sent its prefix twice.
 	return result
 }
 
@@ -184,51 +140,33 @@ func (p *ANSIEnhancedProcessor) processCompleteSequence() []byte {
 	
 	// ESC[J without parameter should be ESC[0J (clear from cursor to end)
 	if bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', 'J'}) {
-		if p.debugMode {
-			log.Printf("ANSI: Fixed ESC[J to ESC[0J")
-		}
 		return []byte{0x1B, '[', '0', 'J'}
 	}
 	
 	// ESC[K without parameter should be ESC[0K (clear from cursor to end of line)
 	if bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', 'K'}) {
-		if p.debugMode {
-			log.Printf("ANSI: Fixed ESC[K to ESC[0K")
-		}
 		return []byte{0x1B, '[', '0', 'K'}
 	}
 	
 	// ESC[m without parameter should be ESC[0m (reset)
 	if bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', 'm'}) {
-		if p.debugMode {
-			log.Printf("ANSI: Fixed ESC[m to ESC[0m")
-		}
 		return []byte{0x1B, '[', '0', 'm'}
 	}
 	
 	// ESC[H without parameters should be ESC[1;1H (home)
 	if bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', 'H'}) {
 		// This is actually correct, but log it
-		if p.debugMode {
-			log.Printf("ANSI: Home cursor ESC[H")
-		}
 	}
 	
     // Check for clear screen variations
     if len(p.sequenceBuffer) >= 4 && p.sequenceBuffer[0] == 0x1B && p.sequenceBuffer[1] == '[' {
         // ESC[2J - clear entire screen
         if bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', '2', 'J'}) || bytes.Equal(p.sequenceBuffer, []byte{0x1B, '[', '0', ';', '2', 'J'}) {
-            if p.debugMode {
-                log.Printf("ANSI: Clear screen ESC[2J (homing)")
-            }
             // Home cursor after clear screen for ANSI.SYS compatibility
             return []byte{0x1B, '[', '2', 'J', 0x1B, '[', 'H'}
         }
         // Generic contains '2J'
         if bytes.Contains(p.sequenceBuffer, []byte{'2', 'J'}) {
-            if p.debugMode {
-                log.Printf("ANSI: Clear screen ESC[2J (homing)")
-            }
             out := make([]byte, 0, len(p.sequenceBuffer)+3)
             out = append(out, p.sequenceBuffer...)
             out = append(out, 0x1B, '[', 'H')
@@ -236,31 +174,12 @@ func (p *ANSIEnhancedProcessor) processCompleteSequence() []byte {
         }
     }
 	
-	// Log unknown or interesting sequences in debug mode
-	if p.debugMode && len(p.sequenceBuffer) > 2 {
-		if p.sequenceBuffer[1] == '[' {
-			// Extract the command character
-			cmdChar := p.sequenceBuffer[len(p.sequenceBuffer)-1]
-			switch cmdChar {
-			case 'A', 'B', 'C', 'D': // Cursor movement
-				// Common, don't log
-			case 'm': // SGR
-				// Common, don't log
-			default:
-				log.Printf("ANSI: Sequence %q", p.sequenceBuffer)
-			}
-		}
-	}
-	
 	// Return sequence as-is if no fixes needed
 	return p.sequenceBuffer
 }
 
 // InjectClearScreen injects a proper clear screen sequence
 func (p *ANSIEnhancedProcessor) InjectClearScreen() []byte {
-	if p.debugMode {
-		log.Printf("ANSI: Injecting clear screen sequence")
-	}
 	// Clear screen, home cursor, reset attributes
 	return []byte{
 		0x1B, '[', '2', 'J',  // Clear entire screen
