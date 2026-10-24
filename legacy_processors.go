@@ -1,5 +1,10 @@
 package main
 
+import (
+    "bytes"
+    "strings"
+)
+
 // Minimal PETSCII/ATASCII control translation to ANSI/UTF-8 friendly bytes.
 // This is not a full terminal emulator; it handles common controls so that
 // xterm.js can render cursor movement, screen clear, reverse video and colors.
@@ -13,12 +18,51 @@ func (c *Client) translateLegacyControls(data []byte) []byte {
 
     switch charset {
     case "PETSCIIU", "PETSCIIL":
-        return c.translatePETSCIIToANSI(data)
+        return c.translatePETSCIIToANSI(stripTerminalQueries(data))
     case "ATASCII":
-        return translateATASCIIToANSI(data)
+        return translateATASCIIToANSI(stripTerminalQueries(data))
     default:
         return data
     }
+}
+
+func isLegacyCharset(cs string) bool {
+    switch strings.ToUpper(cs) {
+    case "PETSCIIU", "PETSCIIL", "ATASCII":
+        return true
+    }
+    return false
+}
+
+// stripTerminalQueries removes DSR/CPR (CSI ... n), DA (CSI ... c) and DECID
+// (ESC Z) so the browser terminal does not answer them in a legacy session. A
+// real C64/Atari cannot answer; boards like Image BBS switch to ANSI when they
+// get a reply, and would then be decoded as PETSCII.
+func stripTerminalQueries(data []byte) []byte {
+    if !bytes.Contains(data, []byte{0x1B}) {
+        return data
+    }
+    out := make([]byte, 0, len(data))
+    for i := 0; i < len(data); i++ {
+        if data[i] == 0x1B && i+1 < len(data) {
+            if data[i+1] == 'Z' {
+                i++
+                continue
+            }
+            if data[i+1] == '[' {
+                j := i + 2
+                for j < len(data) && (data[j] == ';' || data[j] == '?' || data[j] == '>' || data[j] == '=' || (data[j] >= '0' && data[j] <= '9')) {
+                    j++
+                }
+                if j < len(data) && (data[j] == 'n' || data[j] == 'c') {
+                    i = j
+                    continue
+                }
+            }
+        }
+        out = append(out, data[i])
+    }
+    return out
 }
 
 func (c *Client) translatePETSCIIToANSI(data []byte) []byte {
@@ -51,8 +95,10 @@ func (c *Client) translatePETSCIIToANSI(data []byte) []byte {
         c.petsciiLastCR = false
         switch b {
         // Ignore undefined/unused low control codes to prevent replacement chars
-        case 0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x08, 0x10, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A:
-            // These PETSCII codes are undefined or not displayable - skip them
+        case 0x00, 0x01, 0x02, 0x03, 0x04, 0x06, 0x08, 0x0B, 0x10, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1A,
+            0x80, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8A, 0x8B, 0x8C, 0x8F:
+            // These PETSCII codes are undefined or not displayable (0x85-0x8C
+            // are function keys) - skip them
             // Note: 0x1B (ESC) is passed through for any direct ANSI from BBS
             continue
         // Mode switches (runtime)
@@ -119,8 +165,13 @@ func (c *Client) translatePETSCIIToANSI(data []byte) []byte {
                 out = append(out, '\n')
             }
             continue
-        // CR in PETSCII moves to beginning of NEXT line (like CRLF)
-        case 0x0D:
+        // INSERT: open a space at the cursor
+        case 0x94:
+            out = append(out, 0x1B, '[', '@')
+            continue
+        // CR in PETSCII moves to beginning of NEXT line (like CRLF);
+        // SHIFT-RETURN (0x8D) does the same
+        case 0x0D, 0x8D:
             out = append(out, '\r', '\n')
             c.petsciiLastCR = true
             continue

@@ -174,8 +174,8 @@ func ConvertPETSCIIUToUTF8(data []byte) string {
             continue
         }
         // Preserve ASCII control characters needed for terminal operations
-        // BS (0x08), TAB (0x09), LF (0x0A), CR (0x0D)
-        if b < 0x20 && (b == 0x08 || b == 0x09 || b == 0x0A || b == 0x0D) {
+        // BEL (0x07), BS (0x08), TAB (0x09), LF (0x0A), CR (0x0D)
+        if b < 0x20 && (b == 0x07 || b == 0x08 || b == 0x09 || b == 0x0A || b == 0x0D) {
             runes = append(runes, rune(b))
             continue
         }
@@ -224,8 +224,8 @@ func ConvertPETSCIILToUTF8(data []byte) string {
             continue
         }
         // Preserve ASCII control characters needed for terminal operations
-        // BS (0x08), TAB (0x09), LF (0x0A), CR (0x0D)
-        if b < 0x20 && (b == 0x08 || b == 0x09 || b == 0x0A || b == 0x0D) {
+        // BEL (0x07), BS (0x08), TAB (0x09), LF (0x0A), CR (0x0D)
+        if b < 0x20 && (b == 0x07 || b == 0x08 || b == 0x09 || b == 0x0A || b == 0x0D) {
             runes = append(runes, rune(b))
             continue
         }
