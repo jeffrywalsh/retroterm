@@ -192,6 +192,33 @@ body.mobile-mode #terminal-container .terminal {
     overflow: hidden;
 }
 
+/* Footer: last update and source link */
+.site-footer {
+    flex: none;
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 0.4rem 1.5rem;
+    padding: 0.4rem 1rem;
+    border-top: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+}
+
+.site-footer a {
+    color: var(--accent-primary);
+    text-decoration: none;
+}
+
+.site-footer a:hover {
+    text-decoration: underline;
+}
+
+.site-footer span:empty {
+    display: none;
+}
+
 /* Sidebar */
 .sidebar {
     width: 320px;

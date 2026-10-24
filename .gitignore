@@ -57,6 +57,14 @@
 !.github/workflows/
 !.github/workflows/ci.yml
 
+# Cloudflare Tunnel kit (see deploy/tunnel/README.md)
+!deploy/
+!deploy/tunnel/
+!deploy/tunnel/README.md
+!deploy/tunnel/compose.yaml
+!deploy/tunnel/cloudflare.json
+!deploy/tunnel/cloudflare.mjs
+
 # Allow verification scripts
 !verify_ansi_fix.sh
 
