@@ -455,14 +455,8 @@ function connectToBBS(bbs) {
     // Always use direct connection method since form might not exist
     if (window.bbsTerminal && window.bbsTerminal.directConnect) {
         if (window.DEBUG) console.log('Using directConnect method');
-        // Prefer UI dropdown if present, else fall back to BBS-provided encoding, else CP437
-        let selectedEncoding = 'CP437';
-        const charsetEl = document.getElementById('charset');
-        if (charsetEl && charsetEl.value) {
-            selectedEncoding = charsetEl.value;
-        } else if (bbs.encoding) {
-            selectedEncoding = bbs.encoding;
-        }
+        // Let server decide charset based on charset_bbs.csv
+        let selectedEncoding = '';  // Empty string lets server choose
 
         window.bbsTerminal.directConnect(
             bbs.host,

@@ -28,11 +28,18 @@
                     <span class="status-label">BBS:</span>
                     <span id="current-bbs" class="status-value">None</span>
                 </div>
-                <div class="status-item">
+                <div class="status-item" style="display: none;">
                     <label for="charset" class="status-label">Encoding:</label>
                     <select id="charset" class="form-control" style="width:auto; padding: 0.25rem 0.5rem;">
                         <option value="CP437">MS-DOS CP437</option>
+                        <option value="CP866">CP866 (Cyrillic)</option>
+                        <option value="BIG5">Big5 (Traditional Chinese)</option>
+                        <option value="GBK">GBK (Simplified Chinese)</option>
+                        <option value="ISO-8859-1">ISO-8859-1 (Amiga)</option>
                         <option value="UTF-8">UTF-8</option>
+                        <option value="PETSCIIU">PETSCII (Upper/Graphics)</option>
+                        <option value="PETSCIIL">PETSCII (Lower/Uppercase)</option>
+                        <option value="ATASCII">ATASCII</option>
                     </select>
                 </div>
                 <div class="status-item">
@@ -99,6 +106,7 @@
                 <div class="form-group">
                     <label for="terminal-size">Terminal Size</label>
                     <select id="terminal-size" class="form-control">
+                        <option value="40x25">40×25 (C64/PETSCII)</option>
                         <option value="80x25">80×25 (Classic BBS)</option>
                         <option value="100x31">100×31 (Extended)</option>
                     </select>
@@ -125,7 +133,8 @@
         </div>
     </div>
 
-    
+    <!-- Replay Capture Modal -->
+    <!-- Replay modal removed for production -->
 
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
@@ -135,6 +144,6 @@
     <script src="ansi-music.js"></script>
     <script src="directory.js?v=4"></script>
     <script src="auth.js?v=8"></script>
-    <script src="app.js?v=8"></script>
+    <script src="app.js?v=9"></script>
 </body>
 </html>

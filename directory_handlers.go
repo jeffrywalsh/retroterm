@@ -4,6 +4,7 @@ package main
 // serving the canonical BBS directory backed by bbs.csv.
 
 import (
+    "crypto/subtle"
     "encoding/csv"
     "encoding/json"
     "io"
@@ -37,7 +38,18 @@ func handleGetBBSDirectory(w http.ResponseWriter, r *http.Request) {
 
 // handleImportBBSGuide accepts raw text from the Telnet BBS Guide and
 // regenerates bbs.csv. The CSV becomes the canonical dataset used by the app.
+// bbs.csv is also the connection allowlist, so the endpoint is disabled unless
+// BBS_IMPORT_TOKEN is set, and callers must send "Authorization: Bearer <token>".
 func handleImportBBSGuide(w http.ResponseWriter, r *http.Request) {
+    token := os.Getenv("BBS_IMPORT_TOKEN")
+    if token == "" {
+        http.NotFound(w, r)
+        return
+    }
+    if subtle.ConstantTimeCompare([]byte(r.Header.Get("Authorization")), []byte("Bearer "+token)) != 1 {
+        http.Error(w, "Unauthorized", http.StatusUnauthorized)
+        return
+    }
     if r.Method != http.MethodPost {
         http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
         return

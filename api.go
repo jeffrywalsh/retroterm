@@ -3,11 +3,15 @@ package main
 // API handlers for read-only public endpoints exposed by the server.
 
 import (
-	"encoding/json"
-	"net/http"
+    "encoding/json"
+    "net/http"
+    "os"
 )
 
-type ConfigResponse struct{}
+type ConfigResponse struct{
+    TestMode    bool   `json:"testMode"`
+    CaptureFile string `json:"captureFile,omitempty"`
+}
 
 type BBSListResponse struct {
 	Success bool      `json:"success"`
@@ -22,7 +26,10 @@ func handleGetConfig(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	config := ConfigResponse{}
+    config := ConfigResponse{
+        TestMode:    os.Getenv("TEST_MODE") == "true",
+        CaptureFile: os.Getenv("CAPTURE_FILE"),
+    }
 
 	// Stateless-only: return minimal config
 
