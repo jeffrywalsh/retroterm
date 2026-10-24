@@ -26,6 +26,111 @@ func (c *Client) translateLegacyControls(data []byte) []byte {
     }
 }
 
+// convertLegacyToOutput translates PETSCII/ATASCII controls and maps glyphs to
+// UTF-8. The result does not depend on how the stream was split into reads:
+// each read is cut where decoding changes, so every piece uses the right
+// table. Until the session's first legacy byte, text passes through as ASCII
+// (banners and busy messages sent before terminal detection); a PETSCII mode
+// switch (0x0E/0x8E) applies from that byte on. A trailing incomplete escape
+// sequence, or an ATASCII CR that may start a CRLF, waits for the next read.
+// The caller holds outMu.
+func (c *Client) convertLegacyToOutput(data []byte) []byte {
+    if len(c.legacyCarry) > 0 {
+        data = append(c.legacyCarry, data...)
+        c.legacyCarry = nil
+    }
+    c.mu.Lock()
+    charset := c.charset
+    c.mu.Unlock()
+    if cut := legacyCarryIndex(data, charset == "ATASCII"); cut < len(data) {
+        c.legacyCarry = append([]byte(nil), data[cut:]...)
+        data = data[:cut]
+    }
+
+    out := make([]byte, 0, len(data)*2)
+    for len(data) > 0 {
+        if !c.legacySeen {
+            n := indexLegacyByte(data)
+            if n < 0 {
+                n = len(data)
+            }
+            if n > 0 {
+                out = append(out, normalizeCSISGRAny(c.translateLegacyControls(data[:n]))...)
+                data = data[n:]
+                continue
+            }
+            c.legacySeen = true
+        }
+        // Up to the next mode switch; translating the piece applies a switch
+        // at its start, so read the charset afterwards
+        n := len(data)
+        for i := 1; i < len(data); i++ {
+            if data[i] == 0x0E || data[i] == 0x8E {
+                n = i
+                break
+            }
+        }
+        piece := normalizeCSISGRAny(c.translateLegacyControls(data[:n]))
+        data = data[n:]
+        c.mu.Lock()
+        charset = c.charset
+        c.mu.Unlock()
+        switch charset {
+        case "PETSCIIU":
+            out = append(out, ConvertPETSCIIUToUTF8(piece)...)
+        case "PETSCIIL":
+            out = append(out, ConvertPETSCIILToUTF8(piece)...)
+        default:
+            out = append(out, ConvertATASCIIToUTF8(piece)...)
+        }
+    }
+    return out
+}
+
+// indexLegacyByte returns the index of the first byte that only makes sense
+// as PETSCII/ATASCII (high bytes, and controls ASCII text does not use), or -1.
+func indexLegacyByte(data []byte) int {
+    for i, b := range data {
+        if b >= 0x80 {
+            return i
+        }
+        if b < 0x20 {
+            switch b {
+            case 0x00, 0x07, 0x08, 0x09, 0x0A, 0x0C, 0x0D, 0x1B:
+            default:
+                return i
+            }
+        }
+    }
+    return -1
+}
+
+// legacyCarryIndex returns where the bytes to hold for the next read start, or
+// len(data) if none: a trailing ESC, ESC[ or unfinished CSI (short, so a stray
+// ESC cannot hold output back), and for ATASCII a trailing CR, which renders
+// as a glyph alone but as a newline when an LF follows.
+func legacyCarryIndex(data []byte, atascii bool) int {
+    end := len(data)
+    if atascii && end > 0 && data[end-1] == '\r' {
+        end--
+    }
+    for i := end - 1; i >= 0 && i >= end-16; i-- {
+        b := data[i]
+        if b == 0x1B {
+            if i+1 == end || data[i+1] == '[' {
+                return i
+            }
+            return end
+        }
+        if b < 0x20 || b > 0x3F {
+            if b != '[' {
+                return end
+            }
+        }
+    }
+    return end
+}
+
 func isLegacyCharset(cs string) bool {
     switch strings.ToUpper(cs) {
     case "PETSCIIU", "PETSCIIL", "ATASCII":

@@ -284,7 +284,9 @@ func analyzeProbe(meta probeMeta, raw []byte) probeStats {
 	s := probeStats{meta: meta}
 	c := &Client{ansiEnhanced: NewANSIEnhancedProcessor(false)}
 	c.setCharsetAndAdjust(meta.Charset)
+	c.outMu.Lock()
 	c.preambleActive = false
+	c.outMu.Unlock()
 	text := c.processTelnetData(raw)
 	s.textBytes = len(text)
 
@@ -374,7 +376,7 @@ func analyzeProbe(meta probeMeta, raw []byte) probeStats {
 	if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" {
 		processed = c.ansiEnhanced.ProcessANSIData(text)
 	}
-	decoded, _ := c.convertCharsetToOutput(processed)
+	decoded := c.convertCharsetToOutput(processed)
 	for _, r := range string(decoded) {
 		switch {
 		case r == utf8.RuneError:
@@ -451,13 +453,15 @@ func writeProbeReport(t *testing.T, dir string) {
 		if len(raw) > 0 {
 			c := &Client{ansiEnhanced: NewANSIEnhancedProcessor(false)}
 			c.setCharsetAndAdjust(meta.Charset)
+			c.outMu.Lock()
 			c.preambleActive = false
+			c.outMu.Unlock()
 			text := c.processTelnetData(raw)
 			cs := strings.ToUpper(c.charset)
 			if cs != "PETSCIIU" && cs != "PETSCIIL" && cs != "ATASCII" {
 				text = c.ansiEnhanced.ProcessANSIData(text)
 			}
-			decoded, _ := c.convertCharsetToOutput(text)
+			decoded := c.convertCharsetToOutput(text)
 			_ = os.WriteFile(strings.TrimSuffix(mp, ".json")+".out", decoded, 0644)
 		}
 	}
