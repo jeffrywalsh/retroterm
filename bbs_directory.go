@@ -20,7 +20,7 @@ type CharsetOverride struct {
 }
 
 // loadCharsetOverrides loads charset overrides from charset_bbs.csv
-// Format: BBS name, charset (if not CP437), window size (if not 80x25)
+// Format: BBS name, charset, window size (if not 80x25)
 func loadCharsetOverrides() []CharsetOverride {
 	var overrides []CharsetOverride
 
@@ -49,10 +49,10 @@ func loadCharsetOverrides() []CharsetOverride {
 			BBSName: strings.TrimSpace(record[0]),
 		}
 
-		// Charset (if specified and not CP437)
+		// Charset. CP437 is kept too: it overrides the software-based guess
+		// (e.g. Amiga boards listed as "commodore")
 		if len(record) > 1 {
-			charset := strings.TrimSpace(record[1])
-			if charset != "" && charset != "CP437" {
+			if charset := strings.TrimSpace(record[1]); charset != "" {
 				override.Charset = charset
 			}
 		}
@@ -216,10 +216,15 @@ func LoadBBSFromCSV(filename string) ([]BBSEntry, error) {
 			strings.Contains(softwareLower, "c64") ||
 			strings.Contains(softwareLower, "commodore") ||
 			strings.Contains(softwareLower, "image bbs") ||
-			strings.Contains(softwareLower, "c*base") {
+			strings.Contains(softwareLower, "c-base") ||
+			strings.Contains(softwareLower, "cbase") ||
+			strings.Contains(softwareLower, "vic-bbs") {
 			encoding = "PETSCIIU" // Default to upper/graphics mode
 		} else if strings.Contains(softwareLower, "atascii") ||
-			strings.Contains(softwareLower, "atari") {
+			strings.Contains(softwareLower, "atari") ||
+			strings.Contains(softwareLower, "amis") ||
+			// BBS Express! and Express Pro are Atari 8-bit; the ST version is ASCII/ANSI
+			(strings.Contains(softwareLower, "bbs express") && !strings.HasSuffix(softwareLower, " st")) {
 			encoding = "ATASCII"
 		}
 
