@@ -28,6 +28,7 @@
 !proxy.go
 !slug.go
 !zmodem_lrzsz.go
+!bbs_probe_test.go
 
 # Charset configuration
 !charset_bbs.csv
