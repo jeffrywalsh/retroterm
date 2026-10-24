@@ -29,6 +29,8 @@
 !slug.go
 !zmodem_lrzsz.go
 !bbs_probe_test.go
+!decoders_test.go
+!cjk.go
 
 # Charset configuration
 !charset_bbs.csv

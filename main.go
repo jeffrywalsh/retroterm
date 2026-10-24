@@ -139,6 +139,9 @@ type Client struct {
 
     // PETSCII CR already emitted CRLF; swallow an LF that follows, even in the next read
     petsciiLastCR bool
+
+    // Big5/GBK decoder; holds a split character across reads (read loop only)
+    dbcs *dbcsDecoder
 }
 
 // Global list of approved BBSes (loaded from both config and bbs.json)
@@ -618,36 +621,7 @@ func (c *Client) readTelnet() {
                 }
 
                 // Convert charset-specific bytes to UTF-8 for browser rendering
-                var outputData []byte
-                switch c.charset {
-                case "CP437":
-                    utf8String := ConvertCP437ToUTF8Enhanced(processedData)
-                    outputData = []byte(utf8String)
-                case "CP866":
-                    utf8String := ConvertCP866ToUTF8(processedData)
-                    outputData = []byte(utf8String)
-                case "PETSCIIU", "PETSCIIL", "ATASCII":
-                    if shouldBypassLegacyMapping(processedData) {
-                        processedData = c.translateLegacyControls(processedData)
-                        processedData = normalizeCSISGRAny(processedData)
-                        outputData = processedData
-                    } else {
-                        processedData = c.translateLegacyControls(processedData)
-                        processedData = normalizeCSISGRAny(processedData)
-                        if c.charset == "PETSCIIU" {
-                            utf8String := ConvertPETSCIIUToUTF8(processedData)
-                            outputData = []byte(utf8String)
-                        } else if c.charset == "PETSCIIL" {
-                            utf8String := ConvertPETSCIILToUTF8(processedData)
-                            outputData = []byte(utf8String)
-                        } else {
-                            utf8String := ConvertATASCIIToUTF8(processedData)
-                            outputData = []byte(utf8String)
-                        }
-                    }
-                default:
-                    outputData = processedData
-                }
+                outputData, _ := c.convertCharsetToOutput(processedData)
 
                 // Check if charset changed during processing (e.g., via 0x0E/0x8E) and notify UI
                 c.notifyCharsetIfChanged()
@@ -699,6 +673,13 @@ func (c *Client) convertCharsetToOutput(processedData []byte) ([]byte, bool) {
     case "CP866":
         utf8String := ConvertCP866ToUTF8(processedData)
         outputData = []byte(utf8String)
+    case "BIG5", "GBK":
+        if c.dbcs == nil || c.dbcs.charset != c.charset {
+            c.dbcs = newDBCSDecoder(c.charset)
+        }
+        outputData = c.dbcs.Decode(processedData)
+    case "ISO-8859-1":
+        outputData = ConvertLatin1ToUTF8(processedData)
     case "PETSCIIU", "PETSCIIL", "ATASCII":
         if shouldBypassLegacyMapping(processedData) {
             processedData = c.translateLegacyControls(processedData)
@@ -776,7 +757,9 @@ func (c *Client) processTelnetData(data []byte) []byte {
                     // Escaped IAC
                     clean = append(clean, IAC)
                     i += 2
-                } else if i+2 < len(data) && data[i+1] >= SE && data[i+1] <= DONT {
+                } else if i+2 < len(data) && data[i+1] >= WILL && data[i+1] <= DONT {
+                    // Only WILL/WONT/DO/DONT carry an option byte. SB (250) falls
+                    // through to the subnegotiation branch; 240-249 are two bytes.
                     cmd := data[i+1]
                     option := data[i+2]
 
@@ -1220,6 +1203,13 @@ func (c *Client) shouldFlushLegacyPreamble(chunk []byte) bool {
 // handleTerminalQueries detects DA/CPR requests in the data stream and replies
 // with conservative answers suitable for BBS detection.
 func (c *Client) handleTerminalQueries(data []byte) {
+    // Legacy sessions never answer: see stripTerminalQueries
+    c.mu.Lock()
+    legacy := isLegacyCharset(c.charset)
+    c.mu.Unlock()
+    if legacy {
+        return
+    }
     // Patterns to detect:
     //  - ESC [ 6 n (CPR request)
     //  - ESC [ c or ESC [ 0 c (Primary DA request)
@@ -1307,6 +1297,8 @@ func (c *Client) updateCursorFrom(data []byte) {
     row := c.cursorRow
     col := c.cursorCol
     seq := append(c.cursorSeqBuf[:0], c.cursorSeqBuf...)
+    // UTF-8 continuation bytes do not advance the cursor
+    utf8Session := c.charset == "UTF-8"
     c.mu.Unlock()
 
     // Helper to clamp
@@ -1398,7 +1390,7 @@ func (c *Client) updateCursorFrom(data []byte) {
             }
         default:
             // Printable?
-            if b >= 0x20 {
+            if b >= 0x20 && !(utf8Session && b >= 0x80 && b <= 0xBF) {
                 col++
                 if col > cols { col = cols }
             }
@@ -1596,6 +1588,10 @@ func (c *Client) sendToRemote(data string) {
         case "CP866":
             // Convert UTF-8 input to CP866 for telnet connections
             outputData = ConvertUTF8ToCP866(string(dataBytes))
+        case "BIG5", "GBK":
+            outputData = ConvertUTF8ToDBCS(charset, string(dataBytes))
+        case "ISO-8859-1":
+            outputData = ConvertUTF8ToLatin1(string(dataBytes))
         case "PETSCIIU":
             outputData = ConvertUTF8ToPETSCIIU(string(dataBytes))
         case "PETSCIIL":

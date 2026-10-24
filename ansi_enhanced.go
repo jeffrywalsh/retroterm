@@ -24,40 +24,10 @@ func (p *ANSIEnhancedProcessor) ProcessANSIData(data []byte) []byte {
     for i := 0; i < len(data); i++ {
         b := data[i]
         
-        // Normalize 8-bit C1 control codes to 7-bit ESC-prefixed sequences
-        // Common mappings: CSI (0x9B) -> ESC '[', OSC (0x9D) -> ESC ']', DCS (0x90) -> ESC 'P', ST (0x9C) -> ESC '\\'
-        if b >= 0x80 && b <= 0x9F {
-            switch b {
-            case 0x9B: // CSI
-                p.inSequence = true
-                p.sequenceBuffer = p.sequenceBuffer[:0]
-                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, '[')
-                continue
-            case 0x9D: // OSC
-                p.inSequence = true
-                p.sequenceBuffer = p.sequenceBuffer[:0]
-                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, ']')
-                continue
-            case 0x90: // DCS
-                p.inSequence = true
-                p.sequenceBuffer = p.sequenceBuffer[:0]
-                p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, 'P')
-                continue
-            case 0x9C: // ST (String Terminator)
-                if p.inSequence {
-                    p.sequenceBuffer = append(p.sequenceBuffer, 0x1B, '\\')
-                    // Will be recognized as complete by isSequenceComplete for OSC; pass through
-                    processed := p.processCompleteSequence()
-                    result = append(result, processed...)
-                    p.inSequence = false
-                    p.sequenceBuffer = p.sequenceBuffer[:0]
-                    continue
-                }
-                // Not in a sequence; emit ESC \
-                result = append(result, 0x1B, '\\')
-                continue
-            }
-        }
+        // Bytes 0x80-0x9F are NOT treated as 8-bit C1 controls: they are text in
+        // every charset this runs for (CP437 É¢£¥, CP866 Р-Я, UTF-8 continuation
+        // bytes, Big5/GBK). A probe of the whole directory found no BBS sending
+        // 8-bit CSI, but 70 whose text contains these bytes.
 
         // Handle special control characters
         switch b {
@@ -103,11 +73,9 @@ func (p *ANSIEnhancedProcessor) ProcessANSIData(data []byte) []byte {
 		}
 	}
 	
-	// If we have an incomplete sequence at the end, append it as-is
-	if len(p.sequenceBuffer) > 0 {
-		result = append(result, p.sequenceBuffer...)
-	}
-	
+	// An incomplete sequence at the end stays buffered (inSequence) and is
+	// emitted whole once the next read completes it. Emitting it here as well
+	// sent its prefix twice.
 	return result
 }
 
