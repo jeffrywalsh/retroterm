@@ -1,0 +1,28 @@
+# Cloudflare Tunnel for retroterm.com. Its own Compose project, so the
+# required token below can't break routine `docker compose` commands in
+# /data. Production copy: /data/retroterm/tunnel on dellcon. Started only by
+# `node cloudflare.mjs --start`, which supplies the token over SSH stdin.
+name: retroterm-tunnel
+services:
+  tunnel:
+    # Same digest PeakRunner pins; bump deliberately.
+    image: cloudflare/cloudflared@sha256:b269e8abd07a5bf6f3f4be65d5050b2174eca89c56a0241a8ff32a16aec454e4
+    container_name: retroterm-cloudflared
+    restart: unless-stopped
+    command: [tunnel, --no-autoupdate, run]
+    environment:
+      TUNNEL_TOKEN: ${RETROTERM_TUNNEL_TOKEN:?Use cloudflare.mjs --start to supply the tunnel credential}
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    mem_limit: 256m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options: {max-size: 10m, max-file: "3"}
+    networks: [data]
+networks:
+  # The /data project's network, where caddy and retroterm live.
+  data:
+    name: data_default
+    external: true
