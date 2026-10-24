@@ -289,3 +289,23 @@ func TestZmodemCancelRacesCompletion(t *testing.T) {
 		t.Fatal("transfer still active")
 	}
 }
+
+func TestTelnetCommandsSplitAcrossReads(t *testing.T) {
+	// A command cut by a read boundary used to be dropped half-way and its
+	// remaining bytes shown as text (e.g. TTYPE SEND leaking \x18\x01)
+	data := []byte("A\xff\xfb\x01B\xff\xfa\x18\x01\xff\xf0C\xff\xffD\xff\xf1E")
+	whole := string((&Client{}).processTelnetData(data))
+	if whole != "ABC\xffDE" {
+		t.Fatalf("one read gives %q", whole)
+	}
+	for step := 1; step <= 4; step++ {
+		c := &Client{}
+		var got []byte
+		for i := 0; i < len(data); i += step {
+			got = append(got, c.processTelnetData(data[i:min(i+step, len(data))])...)
+		}
+		if string(got) != whole {
+			t.Errorf("%d-byte reads give %q, want %q", step, got, whole)
+		}
+	}
+}
