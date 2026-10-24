@@ -64,8 +64,20 @@ class BBSTerminal {
         return this.ws;
     }
 
-    // Selects the column widths for a charset: see the 'dbcs' provider
-    applyCharsetWidths(charset) {
+    // Shows the session's charset in the header and selects its column
+    // widths (see the 'dbcs' provider)
+    applyCharset(charset) {
+        const modeEl = document.getElementById('terminal-mode');
+        if (modeEl) {
+            const names = {
+                CP437: 'ANSI', 'ISO-8859-1': 'Latin-1', BIG5: 'Big5',
+                PETSCIIU: 'PETSCII', PETSCIIL: 'PETSCII'
+            };
+            modeEl.textContent = names[charset] || charset;
+            const select = document.getElementById('charset');
+            const option = select && Array.from(select.options).find((o) => o.value === charset);
+            modeEl.title = option ? option.textContent : charset;
+        }
         try {
             const dbcs = charset === 'BIG5' || charset === 'GBK';
             this.terminal.unicode.activeVersion = dbcs ? 'dbcs' : this.defaultUnicodeVersion;
@@ -343,7 +355,7 @@ class BBSTerminal {
         if (charsetSel) {
             charsetSel.addEventListener('change', (e) => {
                 const newCharset = e.target.value || 'CP437';
-                this.applyCharsetWidths(newCharset);
+                this.applyCharset(newCharset);
                 // Persist preference
                 this.saveSettings();
                 // Inform server if connected so future data path updates
@@ -612,7 +624,7 @@ class BBSTerminal {
                         if (charsetEl) {
                             charsetEl.value = msg.charset;
                         }
-                        this.applyCharsetWidths(msg.charset);
+                        this.applyCharset(msg.charset);
                         // Mid-session flips only sync the dropdown; writing or resizing
                         // here would corrupt the BBS screen
                         if (!this.awaitingCharset) break;
