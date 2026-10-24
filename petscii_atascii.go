@@ -148,19 +148,28 @@ func init() {
 // ConvertPETSCIIUToUTF8 converts PETSCII upper/graphics bytes to UTF-8 string
 func ConvertPETSCIIUToUTF8(data []byte) string {
     runes := make([]rune, 0, len(data))
-    inAnsi := false
+    sawESC := false
+    inCSI := false
     for i := 0; i < len(data); i++ {
         b := data[i]
         if b == 0x1B { // ESC begins ANSI sequence injected by translator
-            inAnsi = true
+            sawESC = true
             runes = append(runes, rune(b))
             continue
         }
-        if inAnsi {
+        if sawESC {
             runes = append(runes, rune(b))
-            // End CSI on final byte 0x40-0x7E (simple heuristic)
+            if b == '[' {
+                inCSI = true
+            }
+            sawESC = false
+            continue
+        }
+        if inCSI {
+            runes = append(runes, rune(b))
+            // Final byte ends CSI sequence (0x40-0x7E, but not '[')
             if b >= 0x40 && b <= 0x7E {
-                inAnsi = false
+                inCSI = false
             }
             continue
         }
@@ -187,20 +196,30 @@ func ConvertPETSCIIUToUTF8(data []byte) string {
 // ConvertPETSCIILToUTF8 converts PETSCII lower/uppercase bytes to UTF-8 string
 func ConvertPETSCIILToUTF8(data []byte) string {
     runes := make([]rune, 0, len(data))
-    inAnsi := false
+    sawESC := false
+    inCSI := false
     for i := 0; i < len(data); i++ {
         b := data[i]
         if b == 0x1B {
-            inAnsi = true
+            sawESC = true
             runes = append(runes, rune(b))
             continue
         }
         // NOTE: Do NOT treat 0x9B as CSI here - in PETSCII context,
         // 0x9B is a legitimate PETSCII byte (light gray), not ANSI CSI
-        if inAnsi {
+        if sawESC {
             runes = append(runes, rune(b))
+            if b == '[' {
+                inCSI = true
+            }
+            sawESC = false
+            continue
+        }
+        if inCSI {
+            runes = append(runes, rune(b))
+            // Final byte ends CSI sequence (0x40-0x7E)
             if b >= 0x40 && b <= 0x7E {
-                inAnsi = false
+                inCSI = false
             }
             continue
         }
@@ -227,19 +246,46 @@ func ConvertPETSCIILToUTF8(data []byte) string {
 // ConvertATASCIIToUTF8 converts ATASCII bytes to UTF-8 string
 func ConvertATASCIIToUTF8(data []byte) string {
     runes := make([]rune, 0, len(data))
-    inAnsi := false
+    sawESC := false
+    inCSI := false
     for i := 0; i < len(data); i++ {
         b := data[i]
         if b == 0x1B {
-            inAnsi = true
+            sawESC = true
             runes = append(runes, rune(b))
             continue
         }
-        if inAnsi {
+        if sawESC {
             runes = append(runes, rune(b))
-            if b >= 0x40 && b <= 0x7E {
-                inAnsi = false
+            if b == '[' {
+                inCSI = true
             }
+            sawESC = false
+            continue
+        }
+        if inCSI {
+            runes = append(runes, rune(b))
+            // Final byte ends CSI sequence (0x40-0x7E)
+            if b >= 0x40 && b <= 0x7E {
+                inCSI = false
+            }
+            continue
+        }
+        // In ATASCII, bytes 0x00-0x1F (except 0x1B ESC) are graphics characters,
+        // NOT control characters. The only exception is CR+LF pairs which are
+        // injected by translateATASCIIToANSI when converting 0x9B (ATASCII EOL).
+        // We detect CR+LF pairs and preserve them, but lone CR or LF should be
+        // converted to their ATASCII graphics equivalents.
+        if b == 0x0D && i+1 < len(data) && data[i+1] == 0x0A {
+            // CR+LF pair - this was injected by translateATASCIIToANSI
+            runes = append(runes, '\r', '\n')
+            i++ // Skip the LF
+            continue
+        }
+        // Note: Lone 0x0D or 0x0A are ATASCII graphics (▀ and ◣), not control chars
+        // Space
+        if b == 0x20 {
+            runes = append(runes, ' ')
             continue
         }
         r := atasciiToUnicode[b]
@@ -248,6 +294,7 @@ func ConvertATASCIIToUTF8(data []byte) string {
         }
         runes = append(runes, r)
     }
+
     return string(runes)
 }
 

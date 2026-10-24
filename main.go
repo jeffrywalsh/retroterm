@@ -134,6 +134,11 @@ type Client struct {
     preambleBuf    []byte
     preambleStart  time.Time
 
+    // Track last notified charset to detect dynamic changes
+    lastNotifiedCharset string
+
+    // PETSCII CR already emitted CRLF; swallow an LF that follows, even in the next read
+    petsciiLastCR bool
 }
 
 // Global list of approved BBSes (loaded from both config and bbs.json)
@@ -278,7 +283,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
     
     client := &Client{
         ws:           conn,
-        done:         make(chan bool),
+        done:         make(chan bool, 1), // Buffered to prevent goroutine leak
         charset:      "CP437",
         ansiEnhanced: NewANSIEnhancedProcessor(false),
         termCols:     80,
@@ -300,7 +305,9 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		for {
 			select {
 			case <-ticker.C:
-				if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				// WriteControl may run concurrently with sendJSON's writes;
+				// WriteMessage may not (gorilla panics on concurrent writers)
+				if err := conn.WriteControl(websocket.PingMessage, nil, time.Now().Add(10*time.Second)); err != nil {
 					return
 				}
 			case <-client.done:
@@ -393,6 +400,10 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
         }
         case "setCharset":
             client.setCharsetAndAdjust(msg.Charset)
+            // Also update lastNotifiedCharset to prevent spurious notifications
+            client.mu.Lock()
+            client.lastNotifiedCharset = msg.Charset
+            client.mu.Unlock()
         case "getBBSList":
             client.sendBBSList()
         case "connectToBBS":
@@ -463,6 +474,13 @@ func (c *Client) connectTelnet(host string, port int) {
 
 	c.sendMessage("connected", fmt.Sprintf("Connected to %s", address))
 
+	// Send the detected charset to the client so UI can update
+	c.mu.Lock()
+	detectedCharset := c.charset
+	c.lastNotifiedCharset = detectedCharset // Track to avoid duplicate notifications
+	c.mu.Unlock()
+	c.sendJSON(Message{Type: "charset", Charset: detectedCharset})
+
 	// Handle telnet data
 	go c.readTelnet()
 }
@@ -501,19 +519,29 @@ func (c *Client) readTelnet() {
             // Check for Zmodem in raw data FIRST (before telnet processing)
             rawData := buffer[:n]
 
+			// Get ZMODEM receiver reference under lock to avoid race conditions
+			c.mu.Lock()
+			zr := c.zmodemReceiver
+			suppressZmodem := c.suppressZmodem
+			suppressUntil := c.suppressUntil
+			c.mu.Unlock()
 
 			// Pre-suppress terminal output on first ZMODEM signature before receiver activates
-			if c.hasZmodemSignature(rawData) && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) {
-				if !c.suppressZmodem {
+			if c.hasZmodemSignature(rawData) && (zr == nil || !zr.Active()) {
+				if !suppressZmodem {
+					c.mu.Lock()
 					c.suppressZmodem = true
 					c.suppressUntil = time.Now().Add(5 * time.Second)
+					suppressZmodem = true
+					suppressUntil = c.suppressUntil
+					c.mu.Unlock()
 				}
 			}
 
 			// Feed RAW data to Zmodem receiver if available (not cleaned!)
             var cleanData []byte
-            if c.zmodemReceiver != nil {
-                if remaining, consumed := c.zmodemReceiver.ProcessData(rawData); consumed {
+            if zr != nil {
+                if remaining, consumed := zr.ProcessData(rawData); consumed {
 					// During transfer, optionally show minimal status to terminal or suppress
 					// Suppress transfer bytes from terminal output
 					if len(remaining) > 0 {
@@ -527,7 +555,7 @@ func (c *Client) readTelnet() {
 					cleanData = c.processTelnetData(rawData)
 				}
 				// If receiver is active, suppress all screen output to avoid binary noise
-				if c.zmodemReceiver.Active() {
+				if zr.Active() {
 					cleanData = nil
 				}
 			} else {
@@ -536,20 +564,27 @@ func (c *Client) readTelnet() {
 			}
 
 			// Check for Zmodem signatures and log them (once per transfer)
-			if c.hasZmodemSignature(rawData) && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) {
+			if c.hasZmodemSignature(rawData) && (zr == nil || !zr.Active()) {
 				// Log detection once per transfer to avoid spam
-				if !c.suppressZmodem || time.Since(c.suppressUntil) > 0 {
+				if !suppressZmodem || time.Since(suppressUntil) > 0 {
 					log.Println("Detected Zmodem signature in data stream")
 				}
 			}
 
 			// Clear pre-suppression if it expired or transfer became active
-			if c.suppressZmodem && (time.Now().After(c.suppressUntil) || (c.zmodemReceiver != nil && c.zmodemReceiver.Active())) {
+			if suppressZmodem && (time.Now().After(suppressUntil) || (zr != nil && zr.Active())) {
+				c.mu.Lock()
 				c.suppressZmodem = false
+				c.mu.Unlock()
 			}
 
             // Only send to terminal if not in active ZMODEM transfer and not in pre-suppression window
-            if len(cleanData) > 0 && (c.zmodemReceiver == nil || !c.zmodemReceiver.Active()) && !c.suppressZmodem {
+            // Re-check suppression state under lock
+            c.mu.Lock()
+            suppressNow := c.suppressZmodem
+            zrActive := c.zmodemReceiver != nil && c.zmodemReceiver.Active()
+            c.mu.Unlock()
+            if len(cleanData) > 0 && !zrActive && !suppressNow {
                 // ANSI Music: detect and emit events, suppressing music sequences
                 if c.music != nil {
                     if remaining, consumed := c.music.Process(cleanData); consumed {
@@ -614,6 +649,8 @@ func (c *Client) readTelnet() {
                     outputData = processedData
                 }
 
+                // Check if charset changed during processing (e.g., via 0x0E/0x8E) and notify UI
+                c.notifyCharsetIfChanged()
 
                 // Final output guard: normalize any CSI SGR with uppercase 'M' or lowercase 'j'
                 if bytes.Contains(outputData, []byte{0x1B, '['}) {
@@ -1130,8 +1167,24 @@ func (c *Client) setCharsetAndAdjust(cs string) {
     }
 }
 
+// notifyCharsetIfChanged checks if charset has changed since last notification
+// and sends a charset message to the client UI if so.
+func (c *Client) notifyCharsetIfChanged() {
+    c.mu.Lock()
+    currentCharset := c.charset
+    lastNotified := c.lastNotifiedCharset
+    c.mu.Unlock()
+
+    if currentCharset != lastNotified && currentCharset != "" {
+        c.mu.Lock()
+        c.lastNotifiedCharset = currentCharset
+        c.mu.Unlock()
+        c.sendJSON(Message{Type: "charset", Charset: currentCharset})
+    }
+}
+
 // shouldFlushLegacyPreamble decides when to flush buffered legacy preamble.
-// Flush triggers on PETSCII clear (0x93) or home (0x13), ATASCII FF (0x0C),
+// Flush triggers on PETSCII clear (0x93) or home (0x13), ATASCII clear (0x7D),
 // or a short timeout/size threshold.
 func (c *Client) shouldFlushLegacyPreamble(chunk []byte) bool {
     if len(chunk) == 0 {
@@ -1146,10 +1199,10 @@ func (c *Client) shouldFlushLegacyPreamble(chunk []byte) bool {
             }
         }
     }
-    // ATASCII: form feed (clear)
+    // ATASCII: clear screen
     if cs == "ATASCII" {
         for _, b := range chunk {
-            if b == 0x0C { // FF clear
+            if b == 0x7D { // CLEAR
                 return true
             }
         }
@@ -1435,6 +1488,13 @@ func (c *Client) connectSSH(host string, port int, username, password string) {
 
 	c.sendMessage("connected", fmt.Sprintf("Connected to %s", address))
 
+	// Send the detected charset to the client so UI can update
+	c.mu.Lock()
+	detectedCharset := c.charset
+	c.lastNotifiedCharset = detectedCharset // Track to avoid duplicate notifications
+	c.mu.Unlock()
+	c.sendJSON(Message{Type: "charset", Charset: detectedCharset})
+
 	// Handle SSH I/O
 	go c.handleSSHSession(session)
 }
@@ -1481,6 +1541,9 @@ func (c *Client) handleSSHSession(session *ssh.Session) {
             // Use the same charset conversion as telnet
             outputData, _ := c.convertCharsetToOutput(processed)
 
+            // Check if charset changed during processing (e.g., via 0x0E/0x8E) and notify UI
+            c.notifyCharsetIfChanged()
+
             // Final output guard for SSH path as well
             if bytes.Contains(outputData, []byte{0x1B, '['}) {
                 outputData = normalizeCSISGRAny(outputData)
@@ -1515,14 +1578,14 @@ func (c *Client) sendToRemote(data string) {
             dataBytes[i] = 8 // ASCII BS
         }
         // In PETSCII, delete-left is 0x14, map ASCII BS to that
-        if (c.charset == "PETSCIIU" || c.charset == "PETSCIIL") && dataBytes[i] == 8 {
+        if (charset == "PETSCIIU" || charset == "PETSCIIL") && dataBytes[i] == 8 {
             dataBytes[i] = 0x14
         }
     }
 
     // Translate common ANSI cursor keys and controls to legacy equivalents
-    if c.charset == "PETSCIIU" || c.charset == "PETSCIIL" || c.charset == "ATASCII" {
-        dataBytes = translateANSIInputToLegacy(dataBytes, c.charset)
+    if charset == "PETSCIIU" || charset == "PETSCIIL" || charset == "ATASCII" {
+        dataBytes = translateANSIInputToLegacy(dataBytes, charset)
     }
 
     if telnetConn != nil {
@@ -1676,19 +1739,23 @@ func (c *Client) sendJSON(msg Message) {
 // disconnect tears down the session: cancels ZMODEM, closes sockets/sessions,
 // and signals the ping/pong loop to exit.
 func (c *Client) disconnect() {
-    c.mu.Lock()
-    defer c.mu.Unlock()
-
 	// Signal done channel to stop ping ticker
 	select {
 	case c.done <- true:
 	default:
 	}
 
-	// Cancel any active ZMODEM transfer scoped to this session
-	if c.zmodemReceiver != nil {
-		c.zmodemReceiver.Cancel()
+	// Cancel any active ZMODEM transfer scoped to this session. Must run
+	// unlocked: Cancel sends the abort sequence via sendToRemote, which takes c.mu.
+	c.mu.Lock()
+	zr := c.zmodemReceiver
+	c.mu.Unlock()
+	if zr != nil {
+		zr.Cancel()
 	}
+
+    c.mu.Lock()
+    defer c.mu.Unlock()
 
 
 	if c.telnet != nil {
