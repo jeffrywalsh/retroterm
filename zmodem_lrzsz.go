@@ -150,6 +150,7 @@ func (l *LrzszReceiver) Cancel() {
 	if !ok {
 		return
 	}
+	metricTransfer("cancelled", 0)
 	// Attempt to signal cancel to remote
 	if l.client != nil {
 		cancel := []byte{0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18}
@@ -582,6 +583,7 @@ func (l *LrzszReceiver) sendFileToClient(filePath, fileName string) {
 	}
 
 	log.Printf("LRZSZ: Sending file to browser: %s (%d bytes)", fileName, len(data))
+	metricTransfer("ok", len(data))
 
 	// Send file to browser for download
 	l.client.sendJSON(Message{

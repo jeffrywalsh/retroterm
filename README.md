@@ -168,6 +168,7 @@ Environment variables:
 - `TERM_ANSWERS=true` — answer the board's terminal queries (DA, cursor position) for ANSI sessions. PETSCII and ATASCII sessions never answer, like a real C64 or Atari.
 - `CURSOR_TRACK=true` — track the cursor so cursor-position answers are accurate; `CPR_REPLY=true` answers `1;1` instead when tracking is off.
 - `ANSI_NORMALIZE=false` — turn off the ANSI pre-processor (it repairs split and malformed escape sequences).
+- `METRICS_ADDR` — serve Prometheus metrics at `http://<addr>/metrics` on their own listener, for example `METRICS_ADDR=:9188`. They aren't on the public port. They count browsers, sessions, connections per board, connect and session times, bytes, and ZMODEM downloads.
 
 ## Deployment
 

@@ -95,6 +95,7 @@ type ZmodemHandler interface {
 type Client struct {
     ws             *websocket.Conn // WebSocket connection to browser
     telnet         net.Conn        // Telnet connection to BBS
+    sessionStart   time.Time       // When telnet connected, for the session metric
     ssh            *ssh.Client     // SSH client (if using SSH)
     // SSH session and input pipe for writing
     sshSession     *ssh.Session    // SSH session (if using SSH)
@@ -184,6 +185,7 @@ func main() {
 
 	// Setup routes
 	setupRoutes(config)
+	serveMetrics(os.Getenv("METRICS_ADDR"))
 
 	port := config.Server.Port
 	fmt.Printf("Server starting on :%d\n", port)
@@ -289,6 +291,8 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer conn.Close()
+	metricBrowser(1)
+	defer metricBrowser(-1)
 
 	// Configure WebSocket timeouts and keepalive (3 minutes)
 	conn.SetReadDeadline(time.Now().Add(180 * time.Second))
@@ -374,6 +378,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				log.Printf("SECURITY WARNING: Blocked unauthorized connection attempt to %s://%s:%d",
 					msg.Protocol, msg.Host, msg.Port)
 				client.sendMessage("error", "Connection blocked: Host not in approved list")
+				metricConnect("blocked", 0, "", "")
 				continue
 			}
             // Determine charset: message override > BBS entry > default CP437
@@ -476,14 +481,21 @@ func (c *Client) connectTelnet(host string, port int) {
 	log.Printf("Connecting to telnet://%s", address)
 
 	// Use proxy if configured
+	start := time.Now()
 	conn, err := DialWithProxy("tcp", address)
 	if err != nil {
+		metricConnect("failed", time.Since(start), "", "")
 		c.sendMessage("error", err.Error())
 		return
 	}
 
 	c.mu.Lock()
+	if c.telnet != nil {
+		metricSessionEnd(time.Since(c.sessionStart))
+	}
 	c.telnet = conn
+	c.sessionStart = time.Now()
+	metricConnect("ok", c.sessionStart.Sub(start), boardName(host, port), c.charset)
 	// Initialize Zmodem receiver (lrzsz-based) for telnet connections
 	c.zmodemReceiver = NewLrzszReceiver(c)
 	c.mu.Unlock()
@@ -533,6 +545,7 @@ func (c *Client) readTelnet() {
 		}
 
         if n > 0 {
+            metricBytes(n, 0)
             // Check for Zmodem in raw data FIRST (before telnet processing)
             rawData := buffer[:n]
 
@@ -1314,7 +1327,8 @@ func (c *Client) sendTelnet(b []byte) {
     conn := c.telnet
     c.mu.Unlock()
     if conn != nil && len(b) > 0 {
-        _, _ = conn.Write(b)
+        n, _ := conn.Write(b)
+        metricBytes(0, n)
     }
 }
 
@@ -1604,7 +1618,8 @@ func (c *Client) sendToRemote(data string) {
     }
 
     if telnetConn != nil {
-        _, _ = telnetConn.Write(outputData)
+        n, _ := telnetConn.Write(outputData)
+        metricBytes(0, n)
     } else if sshIn != nil {
         _, _ = sshIn.Write(outputData)
     }
@@ -1755,6 +1770,7 @@ func (c *Client) disconnect() {
 	if c.telnet != nil {
 		c.telnet.Close()
 		c.telnet = nil
+		metricSessionEnd(time.Since(c.sessionStart))
 	}
 
     if c.sshSession != nil {
