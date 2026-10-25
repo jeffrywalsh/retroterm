@@ -485,59 +485,128 @@
       "id": 10
     },
     {
-      "type": "bargauge",
-      "title": "Most visited boards, 24 h",
-      "description": "",
+      "type": "table",
+      "title": "Boards visited",
+      "description": "Every board connected to in the selected time range, most visits first.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
       },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "sum by (board, charset) ((increase(retroterm_board_connects_total{job=\"retroterm\"}[$__range]) + (min_over_time(retroterm_board_connects_total{job=\"retroterm\"}[$__range]) unless retroterm_board_connects_total{job=\"retroterm\"} offset $__range) or increase(retroterm_board_connects_total{job=\"retroterm\"}[$__range]))) > 0"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "board": 0,
+              "charset": 1,
+              "Value": 2
+            },
+            "renameByName": {
+              "board": "Board",
+              "charset": "Charset",
+              "Value": "Visits"
+            }
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Visits",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "decimals": 0,
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Visits"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 160
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "gauge",
+                  "mode": "basic"
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "continuous-GrYlRd"
+                }
+              },
+              {
+                "id": "min",
+                "value": 0
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Charset"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 110
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm",
+        "footer": {
+          "show": true,
+          "reducer": [
+            "sum"
+          ],
+          "fields": "",
+          "countRows": false
+        }
+      },
+      "id": 11,
       "gridPos": {
         "x": 0,
         "y": 14,
         "w": 12,
         "h": 12
-      },
-      "targets": [
-        {
-          "refId": "J",
-          "expr": "topk(15, sum by (board) (increase(retroterm_board_connects_total{job=\"retroterm\"}[24h]) + (min_over_time(retroterm_board_connects_total{job=\"retroterm\"}[24h]) unless retroterm_board_connects_total{job=\"retroterm\"} offset 24h) or increase(retroterm_board_connects_total{job=\"retroterm\"}[24h])))",
-          "datasource": {
-            "type": "prometheus",
-            "uid": "prometheus"
-          },
-          "legendFormat": "{{board}}",
-          "instant": true,
-          "range": false
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {
-          "unit": "none",
-          "decimals": 0,
-          "min": 0,
-          "color": {
-            "mode": "continuous-GrYlRd"
-          }
-        },
-        "overrides": []
-      },
-      "options": {
-        "orientation": "horizontal",
-        "displayMode": "gradient",
-        "showUnfilled": true,
-        "valueMode": "color",
-        "namePlacement": "left",
-        "sizing": "auto",
-        "reduceOptions": {
-          "calcs": [
-            "lastNotNull"
-          ],
-          "fields": "",
-          "values": false
-        }
-      },
-      "id": 11
+      }
     },
     {
       "type": "bargauge",
@@ -695,12 +764,175 @@
       "id": 14
     },
     {
+      "type": "table",
+      "title": "Longest sessions",
+      "description": "Boards by their longest finished session in the selected time range, with the average, the total time spent and how many sessions finished. Sessions still open count once they end.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "max by (board) (max_over_time((retroterm_board_last_session_seconds{job=\"retroterm\"} and on (board, charset) (changes(retroterm_board_session_seconds_count{job=\"retroterm\"}[1m]) > 0 or (retroterm_board_session_seconds_count{job=\"retroterm\"} unless retroterm_board_session_seconds_count{job=\"retroterm\"} offset 1m)))[$__range:15s]))"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "sum by (board) (increase(retroterm_board_session_seconds_sum{job=\"retroterm\"}[$__range]) + (min_over_time(retroterm_board_session_seconds_sum{job=\"retroterm\"}[$__range]) unless retroterm_board_session_seconds_sum{job=\"retroterm\"} offset $__range) or increase(retroterm_board_session_seconds_sum{job=\"retroterm\"}[$__range])) / sum by (board) (increase(retroterm_board_session_seconds_count{job=\"retroterm\"}[$__range]) + (min_over_time(retroterm_board_session_seconds_count{job=\"retroterm\"}[$__range]) unless retroterm_board_session_seconds_count{job=\"retroterm\"} offset $__range) or increase(retroterm_board_session_seconds_count{job=\"retroterm\"}[$__range]))"
+        },
+        {
+          "refId": "C",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "sum by (board) (increase(retroterm_board_session_seconds_sum{job=\"retroterm\"}[$__range]) + (min_over_time(retroterm_board_session_seconds_sum{job=\"retroterm\"}[$__range]) unless retroterm_board_session_seconds_sum{job=\"retroterm\"} offset $__range) or increase(retroterm_board_session_seconds_sum{job=\"retroterm\"}[$__range]))"
+        },
+        {
+          "refId": "D",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "format": "table",
+          "instant": true,
+          "range": false,
+          "expr": "sum by (board) (increase(retroterm_board_session_seconds_count{job=\"retroterm\"}[$__range]) + (min_over_time(retroterm_board_session_seconds_count{job=\"retroterm\"}[$__range]) unless retroterm_board_session_seconds_count{job=\"retroterm\"} offset $__range) or increase(retroterm_board_session_seconds_count{job=\"retroterm\"}[$__range])) > 0"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "merge",
+          "options": {}
+        },
+        {
+          "id": "organize",
+          "options": {
+            "excludeByName": {
+              "Time": true
+            },
+            "indexByName": {
+              "board": 0,
+              "Value #A": 1,
+              "Value #B": 2,
+              "Value #C": 3,
+              "Value #D": 4
+            },
+            "renameByName": {
+              "board": "Board",
+              "Value #A": "Longest",
+              "Value #B": "Average",
+              "Value #C": "Total time",
+              "Value #D": "Sessions"
+            }
+          }
+        },
+        {
+          "id": "filterByValue",
+          "options": {
+            "type": "exclude",
+            "match": "any",
+            "filters": [
+              {
+                "fieldName": "Longest",
+                "config": {
+                  "id": "isNull",
+                  "options": {}
+                }
+              }
+            ]
+          }
+        },
+        {
+          "id": "sortBy",
+          "options": {
+            "sort": [
+              {
+                "field": "Longest",
+                "desc": true
+              }
+            ]
+          }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "auto",
+            "filterable": true
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "Longest|Average|Total time"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "dtdurations"
+              },
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Sessions"
+            },
+            "properties": [
+              {
+                "id": "decimals",
+                "value": 0
+              },
+              {
+                "id": "custom.width",
+                "value": 100
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 26,
+        "w": 24,
+        "h": 10
+      },
+      "id": 24
+    },
+    {
       "type": "row",
       "title": "Speed",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 26,
+        "y": 36,
         "w": 24,
         "h": 1
       },
@@ -717,7 +949,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 27,
+        "y": 37,
         "w": 12,
         "h": 8
       },
@@ -777,7 +1009,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 27,
+        "y": 37,
         "w": 12,
         "h": 8
       },
@@ -833,7 +1065,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 35,
+        "y": 45,
         "w": 24,
         "h": 1
       },
@@ -850,7 +1082,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 36,
+        "y": 46,
         "w": 12,
         "h": 8
       },
@@ -901,7 +1133,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 36,
+        "y": 46,
         "w": 12,
         "h": 8
       },
@@ -948,7 +1180,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 44,
+        "y": 54,
         "w": 24,
         "h": 1
       },
@@ -965,7 +1197,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 45,
+        "y": 55,
         "w": 12,
         "h": 8
       },
@@ -1025,7 +1257,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 45,
+        "y": 55,
         "w": 12,
         "h": 8
       },

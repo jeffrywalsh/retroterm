@@ -48,12 +48,23 @@ func (h *histogram) write(w io.Writer, name string) {
 // boardKey labels per-board counters.
 type boardKey struct{ board, charset string }
 
+// boardSessions sums a board's finished sessions. last is the most recent
+// one's length: max_over_time of it gives the longest in a time range,
+// as long as no shorter session on the same board ends within the same
+// scrape interval after a longer one.
+type boardSessions struct {
+	sum   float64
+	count uint64
+	last  float64
+}
+
 var metrics = struct {
 	mu             sync.Mutex
 	browsers       int
 	sessions       int
 	connects       map[string]uint64   // by result: ok, failed, blocked
 	boardConnects  map[boardKey]uint64 // successful connects
+	boardSessions  map[boardKey]*boardSessions
 	bytesFromBBS   uint64
 	bytesToBBS     uint64
 	transfers      map[string]uint64 // ZMODEM, by result: ok, cancelled
@@ -63,6 +74,7 @@ var metrics = struct {
 }{
 	connects:       map[string]uint64{},
 	boardConnects:  map[boardKey]uint64{},
+	boardSessions:  map[boardKey]*boardSessions{},
 	transfers:      map[string]uint64{},
 	connectSeconds: newHistogram(0.25, 0.5, 1, 2, 5, 10, 20, 30, 45, 60, 90),
 	sessionSeconds: newHistogram(10, 30, 60, 300, 600, 1800, 3600, 7200, 14400),
@@ -74,24 +86,32 @@ func metricBrowser(delta int) {
 	metrics.mu.Unlock()
 }
 
-// metricConnect records a connection attempt; took, board and charset only
-// matter for "ok".
-func metricConnect(result string, took time.Duration, board, charset string) {
+// metricConnect records a connection attempt; took and board only matter
+// for "ok".
+func metricConnect(result string, took time.Duration, board boardKey) {
 	metrics.mu.Lock()
 	defer metrics.mu.Unlock()
 	metrics.connects[result]++
 	if result == "ok" {
 		metrics.sessions++
-		metrics.boardConnects[boardKey{board, charset}]++
+		metrics.boardConnects[board]++
 		metrics.connectSeconds.observe(took.Seconds())
 	}
 }
 
-func metricSessionEnd(lasted time.Duration) {
+func metricSessionEnd(lasted time.Duration, board boardKey) {
 	metrics.mu.Lock()
+	defer metrics.mu.Unlock()
 	metrics.sessions--
 	metrics.sessionSeconds.observe(lasted.Seconds())
-	metrics.mu.Unlock()
+	bs := metrics.boardSessions[board]
+	if bs == nil {
+		bs = &boardSessions{}
+		metrics.boardSessions[board] = bs
+	}
+	bs.sum += lasted.Seconds()
+	bs.count++
+	bs.last = lasted.Seconds()
 }
 
 func metricBytes(fromBBS, toBBS int) {
@@ -154,6 +174,22 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	for _, k := range keys {
 		fmt.Fprintf(w, "retroterm_board_connects_total{board=\"%s\",charset=\"%s\"} %d\n",
 			labelValue(k.board), labelValue(k.charset), metrics.boardConnects[k])
+	}
+	sessKeys := make([]boardKey, 0, len(metrics.boardSessions))
+	for k := range metrics.boardSessions {
+		sessKeys = append(sessKeys, k)
+	}
+	sort.Slice(sessKeys, func(i, j int) bool { return sessKeys[i].board < sessKeys[j].board })
+	help("retroterm_board_session_seconds", "summary", "Finished sessions per board: their total length and number.")
+	for _, k := range sessKeys {
+		l := fmt.Sprintf(`board="%s",charset="%s"`, labelValue(k.board), labelValue(k.charset))
+		fmt.Fprintf(w, "retroterm_board_session_seconds_sum{%s} %g\n", l, metrics.boardSessions[k].sum)
+		fmt.Fprintf(w, "retroterm_board_session_seconds_count{%s} %d\n", l, metrics.boardSessions[k].count)
+	}
+	help("retroterm_board_last_session_seconds", "gauge", "Length of each board's most recent finished session; max_over_time gives the longest.")
+	for _, k := range sessKeys {
+		fmt.Fprintf(w, "retroterm_board_last_session_seconds{board=\"%s\",charset=\"%s\"} %g\n",
+			labelValue(k.board), labelValue(k.charset), metrics.boardSessions[k].last)
 	}
 	help("retroterm_connect_seconds", "histogram", "Time to open a successful BBS connection (through Tor when the proxy is on).")
 	metrics.connectSeconds.write(w, "retroterm_connect_seconds")
