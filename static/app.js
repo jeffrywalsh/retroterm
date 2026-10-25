@@ -270,6 +270,20 @@ class BBSTerminal {
         } catch (e) {
         }
 
+        // The WebGL renderer caches each glyph the first time it draws it, and
+        // drawing on a canvas doesn't make the browser fetch Unifont, so text
+        // drawn before the font arrives would keep the fallback font's glyphs
+        // and mix them with Unifont's. Load it now and redraw once each font
+        // face is in.
+        if (document.fonts) {
+            const redraw = () => {
+                try { this.terminal.clearTextureAtlas(); } catch (e) {}
+                this.terminal.refresh(0, this.terminal.rows - 1);
+            };
+            document.fonts.addEventListener('loadingdone', redraw);
+            document.fonts.load(`${this.fontSize}px RetroTermLegacy`).then(redraw, () => {});
+        }
+
         // FitAddon for responsive/mobile fitting
         try {
             this.fitAddon = new FitAddon.FitAddon();
