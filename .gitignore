@@ -31,6 +31,8 @@
 !bbs_probe_test.go
 !decoders_test.go
 !cjk.go
+!metrics.go
+!metrics_test.go
 
 # Charset configuration
 !charset_bbs.csv
@@ -80,3 +82,9 @@
 *.swp
 *.DS_Store
 node_modules/
+
+# Shared Grafana on dellcon (see deploy/monitoring/README.md)
+!deploy/monitoring/
+!deploy/monitoring/README.md
+!deploy/monitoring/retroterm.yml
+!deploy/monitoring/retroterm.json
