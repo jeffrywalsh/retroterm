@@ -31,6 +31,8 @@
 !bbs_probe_test.go
 !decoders_test.go
 !cjk.go
+!metrics.go
+!metrics_test.go
 
 # Charset configuration
 !charset_bbs.csv
