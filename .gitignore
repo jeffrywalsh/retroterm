@@ -82,3 +82,9 @@
 *.swp
 *.DS_Store
 node_modules/
+
+# Shared Grafana on dellcon (see deploy/monitoring/README.md)
+!deploy/monitoring/
+!deploy/monitoring/README.md
+!deploy/monitoring/retroterm.yml
+!deploy/monitoring/retroterm.json
