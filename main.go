@@ -95,7 +95,8 @@ type ZmodemHandler interface {
 type Client struct {
     ws             *websocket.Conn // WebSocket connection to browser
     telnet         net.Conn        // Telnet connection to BBS
-    sessionStart   time.Time       // When telnet connected, for the session metric
+    sessionStart   time.Time       // When telnet connected, for the session metrics
+    sessionBoard   boardKey        // The connected board and its charset, for the same
     ssh            *ssh.Client     // SSH client (if using SSH)
     // SSH session and input pipe for writing
     sshSession     *ssh.Session    // SSH session (if using SSH)
@@ -378,7 +379,7 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				log.Printf("SECURITY WARNING: Blocked unauthorized connection attempt to %s://%s:%d",
 					msg.Protocol, msg.Host, msg.Port)
 				client.sendMessage("error", "Connection blocked: Host not in approved list")
-				metricConnect("blocked", 0, "", "")
+				metricConnect("blocked", 0, boardKey{})
 				continue
 			}
             // Determine charset: message override > BBS entry > default CP437
@@ -484,18 +485,19 @@ func (c *Client) connectTelnet(host string, port int) {
 	start := time.Now()
 	conn, err := DialWithProxy("tcp", address)
 	if err != nil {
-		metricConnect("failed", time.Since(start), "", "")
+		metricConnect("failed", time.Since(start), boardKey{})
 		c.sendMessage("error", err.Error())
 		return
 	}
 
 	c.mu.Lock()
 	if c.telnet != nil {
-		metricSessionEnd(time.Since(c.sessionStart))
+		metricSessionEnd(time.Since(c.sessionStart), c.sessionBoard)
 	}
 	c.telnet = conn
 	c.sessionStart = time.Now()
-	metricConnect("ok", c.sessionStart.Sub(start), boardName(host, port), c.charset)
+	c.sessionBoard = boardKey{boardName(host, port), c.charset}
+	metricConnect("ok", c.sessionStart.Sub(start), c.sessionBoard)
 	// Initialize Zmodem receiver (lrzsz-based) for telnet connections
 	c.zmodemReceiver = NewLrzszReceiver(c)
 	c.mu.Unlock()
@@ -1770,7 +1772,7 @@ func (c *Client) disconnect() {
 	if c.telnet != nil {
 		c.telnet.Close()
 		c.telnet = nil
-		metricSessionEnd(time.Since(c.sessionStart))
+		metricSessionEnd(time.Since(c.sessionStart), c.sessionBoard)
 	}
 
     if c.sshSession != nil {

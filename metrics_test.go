@@ -8,12 +8,14 @@ import (
 )
 
 func TestMetricsExposition(t *testing.T) {
-	metricConnect("ok", 3*time.Second, `Board "Q"`, "CP437")
-	metricConnect("failed", 0, "", "")
-	metricConnect("blocked", 0, "", "")
+	board := boardKey{`Board "Q"`, "CP437"}
+	metricConnect("ok", 3*time.Second, board)
+	metricConnect("failed", 0, boardKey{})
+	metricConnect("blocked", 0, boardKey{})
 	metricBytes(100, 7)
 	metricTransfer("ok", 4096)
-	metricSessionEnd(90 * time.Second)
+	metricSessionEnd(90*time.Second, board)
+	metricSessionEnd(30*time.Second, board)
 
 	rec := httptest.NewRecorder()
 	handleMetrics(rec, httptest.NewRequest("GET", "/metrics", nil))
@@ -23,8 +25,11 @@ func TestMetricsExposition(t *testing.T) {
 		`retroterm_connect_seconds_bucket{le="2"} 0`,
 		`retroterm_connect_seconds_bucket{le="5"} 1`,
 		`retroterm_connect_seconds_bucket{le="+Inf"} 1`,
-		`retroterm_session_seconds_bucket{le="60"} 0`,
-		`retroterm_session_seconds_bucket{le="300"} 1`,
+		`retroterm_session_seconds_bucket{le="60"} 1`,
+		`retroterm_session_seconds_bucket{le="300"} 2`,
+		`retroterm_board_session_seconds_sum{board="Board \"Q\"",charset="CP437"} 120`,
+		`retroterm_board_session_seconds_count{board="Board \"Q\"",charset="CP437"} 2`,
+		`retroterm_board_last_session_seconds{board="Board \"Q\"",charset="CP437"} 30`,
 		`retroterm_zmodem_bytes_total 4096`,
 		"# TYPE retroterm_sessions gauge",
 	} {
