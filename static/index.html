@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>RetroTerm - BBS Terminal</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-    <link rel="stylesheet" href="style.css?v=7">
+    <link rel="stylesheet" href="style.css?v=8">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 </head>
 <body>
@@ -46,6 +46,9 @@
                     <button id="reconnect-btn-header" class="btn btn-primary btn-small" style="display: none;" title="Reconnect to last BBS" aria-label="Reconnect to last BBS">Reconnect</button>
                     <button id="disconnect-btn-header" class="btn btn-danger btn-small" style="display: none;" title="Disconnect" aria-label="Disconnect">Disconnect</button>
                 </div>
+                <div class="status-item">
+                    <button id="fullscreen-btn" class="btn-small menu-button" title="Fullscreen (F)" aria-label="Fullscreen">Fullscreen</button>
+                </div>
                 <div class="status-item menu">
                     <button id="menu-button" class="btn-small menu-button" aria-haspopup="true" aria-expanded="false">Menu ▾</button>
                     <div id="menu-dropdown" class="menu-dropdown" role="menu" aria-hidden="true">
@@ -59,6 +62,7 @@
         <div class="main-content">
             <div class="terminal-area">
                 <div id="terminal-container"></div>
+                <button id="fullscreen-exit-btn" class="fullscreen-exit" title="Exit fullscreen (Esc)" aria-label="Exit fullscreen">&times;</button>
             </div>
         </div>
 
@@ -149,6 +153,6 @@
     <script src="ansi-music.js"></script>
     <script src="directory.js?v=4"></script>
     <script src="auth.js?v=9"></script>
-    <script src="app.js?v=11"></script>
+    <script src="app.js?v=12"></script>
 </body>
 </html>
