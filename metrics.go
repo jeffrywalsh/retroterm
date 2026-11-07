@@ -63,6 +63,7 @@ var metrics = struct {
 	browsers       int
 	sessions       int
 	connects       map[string]uint64   // by result: ok, failed, blocked
+	dialAttempts   map[string]uint64   // each try, by result: ok or a failure reason
 	boardConnects  map[boardKey]uint64 // successful connects
 	boardSessions  map[boardKey]*boardSessions
 	bytesFromBBS   uint64
@@ -73,6 +74,7 @@ var metrics = struct {
 	sessionSeconds *histogram
 }{
 	connects:       map[string]uint64{},
+	dialAttempts:   map[string]uint64{},
 	boardConnects:  map[boardKey]uint64{},
 	boardSessions:  map[boardKey]*boardSessions{},
 	transfers:      map[string]uint64{},
@@ -97,6 +99,13 @@ func metricConnect(result string, took time.Duration, board boardKey) {
 		metrics.boardConnects[board]++
 		metrics.connectSeconds.observe(took.Seconds())
 	}
+}
+
+// metricDialAttempt counts one dial try (a Tor connect may make several).
+func metricDialAttempt(result string) {
+	metrics.mu.Lock()
+	metrics.dialAttempts[result]++
+	metrics.mu.Unlock()
 }
 
 func metricSessionEnd(lasted time.Duration, board boardKey) {
@@ -165,6 +174,15 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 	for _, res := range []string{"ok", "failed", "blocked"} {
 		fmt.Fprintf(w, "retroterm_connects_total{result=\"%s\"} %d\n", res, metrics.connects[res])
 	}
+	help("retroterm_dial_attempts_total", "counter", "Individual dial tries (Tor retries on a new circuit) by result: ok, or why it failed: timeout, refused, unreachable, exit_policy, general, reset, proxy_down, other.")
+	attemptKeys := make([]string, 0, len(metrics.dialAttempts))
+	for k := range metrics.dialAttempts {
+		attemptKeys = append(attemptKeys, k)
+	}
+	sort.Strings(attemptKeys)
+	for _, k := range attemptKeys {
+		fmt.Fprintf(w, "retroterm_dial_attempts_total{result=\"%s\"} %d\n", labelValue(k), metrics.dialAttempts[k])
+	}
 	help("retroterm_board_connects_total", "counter", "Successful connections per board.")
 	keys := make([]boardKey, 0, len(metrics.boardConnects))
 	for k := range metrics.boardConnects {
@@ -191,7 +209,7 @@ func handleMetrics(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "retroterm_board_last_session_seconds{board=\"%s\",charset=\"%s\"} %g\n",
 			labelValue(k.board), labelValue(k.charset), metrics.boardSessions[k].last)
 	}
-	help("retroterm_connect_seconds", "histogram", "Time to open a successful BBS connection (through Tor when the proxy is on).")
+	help("retroterm_connect_seconds", "histogram", "Time to open a successful BBS connection, including any Tor retries.")
 	metrics.connectSeconds.write(w, "retroterm_connect_seconds")
 	help("retroterm_session_seconds", "histogram", "How long BBS sessions lasted.")
 	metrics.sessionSeconds.write(w, "retroterm_session_seconds")

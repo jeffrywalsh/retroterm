@@ -150,7 +150,10 @@ Edit `config.json`:
 
 Notes:
 
-- Set `type` to `tor` for longer timeouts suitable for Tor; use `socks5` for a generic SOCKS proxy.
+- Set `type` to `tor` to get Tor handling; use `socks5` for a generic SOCKS proxy (one 10-second try, using `username`/`password` if set).
+- With `tor`, each connection gets up to 3 tries of 12 seconds. Every try sends a random SOCKS username, so Tor builds a separate circuit for it (`IsolateSOCKSAuth`, on by default). A stalled or refused try is retried through a different exit, and every session leaves from its own exit IP. The `username`/`password` fields are ignored.
+- Each failed try is logged with a reason (`timeout`, `refused`, `unreachable`, `exit_policy`, `general`, `reset`, `proxy_down`) and counted in `retroterm_dial_attempts_total`.
+- Use a current Tor (0.4.8 or later). Older releases lack congestion control and conflux, and connect much more slowly.
 - Restart RetroTerm after editing `config.json`.
 
 ## Configuration Reference (brief)
