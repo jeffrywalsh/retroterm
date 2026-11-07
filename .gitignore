@@ -33,6 +33,7 @@
 !cjk.go
 !metrics.go
 !metrics_test.go
+!proxy_test.go
 
 # Charset configuration
 !charset_bbs.csv
@@ -88,3 +89,9 @@ node_modules/
 !deploy/monitoring/README.md
 !deploy/monitoring/retroterm.yml
 !deploy/monitoring/retroterm.json
+
+# Tor client image on dellcon (see deploy/tor/README.md)
+!deploy/tor/
+!deploy/tor/README.md
+!deploy/tor/Dockerfile
+!deploy/tor/torrc
