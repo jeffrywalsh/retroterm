@@ -18,7 +18,7 @@ class BBSTerminal {
         this.lastConnection = null;
         this.awaitingCharset = false;
         this.music = null;
-        // fullscreen state removed
+        this.isFullscreen = false;
         
         this.loadConfig();
         this.initTerminal();
@@ -352,7 +352,17 @@ class BBSTerminal {
             });
         }
 
-        // Fullscreen removed
+        // Fullscreen: keep the grid (40x25, 80x25...) and scale the font up
+        const fsBtn = document.getElementById('fullscreen-btn');
+        if (fsBtn) fsBtn.addEventListener('click', () => this.toggleFullscreen());
+        const fsExit = document.getElementById('fullscreen-exit-btn');
+        if (fsExit) fsExit.addEventListener('click', () => this.exitFullscreen());
+        document.addEventListener('fullscreenchange', () => {
+            if (!document.fullscreenElement && this.isFullscreen) this.leftFullscreen();
+        });
+        window.addEventListener('resize', () => {
+            if (this.isFullscreen) this.fitFullscreenFontDebounced();
+        });
 
         // Font size change
         const fontSize = document.getElementById('font-size');
@@ -428,7 +438,10 @@ class BBSTerminal {
             } else if (e.key === 's' || e.key === 'S') {
                 const btn = document.getElementById('open-settings-btn');
                 if (btn) btn.click();
+            } else if (e.key === 'f' || e.key === 'F') {
+                this.toggleFullscreen();
             } else if (e.key === 'Escape') {
+                if (this.isFullscreen && !document.fullscreenElement) this.exitFullscreen();
                 document.querySelectorAll('.modal').forEach(m => m.style.display = 'none');
                 const dd = document.getElementById('menu-dropdown');
                 if (dd) dd.classList.remove('open');
@@ -828,9 +841,93 @@ class BBSTerminal {
         }
 
         this.saveSettings();
+        if (this.isFullscreen) this.fitFullscreenFontDebounced();
     }
 
-    // Fullscreen helpers removed
+    // Fullscreen shows only the terminal, on black. The grid keeps its size
+    // (a PETSCII board stays 40x25) and the font grows until the grid fills
+    // the screen's width or height, so glyphs keep their shape and the rest
+    // is black bars. Browsers without element fullscreen (iPhone Safari) get
+    // a fixed full-window layer instead.
+    toggleFullscreen() {
+        if (this.isFullscreen) this.exitFullscreen(); else this.enterFullscreen();
+    }
+
+    enterFullscreen() {
+        const area = document.querySelector('.terminal-area');
+        if (!area || this.isFullscreen) return;
+        this.isFullscreen = true;
+        area.classList.add('fs');
+        document.body.classList.add('terminal-fullscreen');
+        const native = area.requestFullscreen || area.webkitRequestFullscreen;
+        const done = () => {
+            // Let Escape reach the BBS where the browser allows it; holding
+            // Escape still leaves fullscreen
+            try { if (navigator.keyboard && navigator.keyboard.lock) navigator.keyboard.lock(['Escape']).catch(() => {}); } catch (e) {}
+            this.fitFullscreenFontDebounced();
+            this.terminal.focus();
+        };
+        if (native) {
+            Promise.resolve(native.call(area)).then(done, () => {
+                area.classList.add('pseudo');
+                done();
+            });
+        } else {
+            area.classList.add('pseudo');
+            done();
+        }
+    }
+
+    exitFullscreen() {
+        if (!this.isFullscreen) return;
+        const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
+        if (fsEl) {
+            (document.exitFullscreen || document.webkitExitFullscreen).call(document);
+            // fullscreenchange calls leftFullscreen
+        } else {
+            this.leftFullscreen();
+        }
+    }
+
+    leftFullscreen() {
+        this.isFullscreen = false;
+        clearTimeout(this._fsTimer);
+        try { if (navigator.keyboard && navigator.keyboard.unlock) navigator.keyboard.unlock(); } catch (e) {}
+        const area = document.querySelector('.terminal-area');
+        if (area) area.classList.remove('fs', 'pseudo');
+        document.body.classList.remove('terminal-fullscreen');
+        this.terminal.options.fontSize = this.fontSize;
+        if (this.isMobileModeEnabled()) this.fitToContainerDebounced();
+        this.terminal.focus();
+    }
+
+    fitFullscreenFontDebounced() {
+        clearTimeout(this._fsTimer);
+        this._fsTimer = setTimeout(() => this.fitFullscreenFont(), 80);
+    }
+
+    // Largest whole font size whose grid fits the screen
+    fitFullscreenFont() {
+        if (!this.isFullscreen || !this.terminal) return;
+        const area = document.querySelector('.terminal-area');
+        const screen = area && area.querySelector('.xterm-screen');
+        if (!screen) return;
+        const W = area.clientWidth - 16, H = area.clientHeight - 16;
+        const measure = () => [screen.offsetWidth, screen.offsetHeight];
+        const fits = () => { const [w, h] = measure(); return w <= W && h <= H; };
+        let size = this.terminal.options.fontSize;
+        const [w, h] = measure();
+        if (!w || !h) return;
+        size = Math.max(6, Math.min(200, Math.floor(size * Math.min(W / w, H / h))));
+        this.terminal.options.fontSize = size;
+        // Cell sizes round to device pixels, so nudge to the exact fit
+        while (!fits() && size > 6) this.terminal.options.fontSize = --size;
+        while (size < 200) {
+            this.terminal.options.fontSize = size + 1;
+            if (!fits()) { this.terminal.options.fontSize = size; break; }
+            size++;
+        }
+    }
 
     updateStatus(text, className) {
         const status = document.getElementById('connection-status');
@@ -955,6 +1052,7 @@ class BBSTerminal {
     fitToContainer() {
         if (!this.fitAddon || !this.terminal) return;
         if (!this.isMobileModeEnabled()) return; // never fit in desktop mode
+        if (this.isFullscreen) return; // fullscreen keeps the grid and scales the font
         try {
             this.fitAddon.fit();
             const dims = this.fitAddon.proposeDimensions ? this.fitAddon.proposeDimensions() : null;
