@@ -1,0 +1,10 @@
+# Client only, on the Compose network; the port is not published on the host.
+SocksPort 0.0.0.0:9050 IsolateDestAddr
+SocksPolicy accept 10.0.0.0/8, accept 172.16.0.0/12, accept 192.168.0.0/16, reject *
+ExitPolicy reject *:*
+DataDirectory /var/lib/tor
+Log notice stdout
+# RetroTerm connects to telnet (23) on purpose; skip the per-connect warning.
+WarnPlaintextPorts 1
+# BBS sessions run long: use Stable relays for these ports.
+LongLivedPorts 21,22,23,513,1337,2323,6400,8080

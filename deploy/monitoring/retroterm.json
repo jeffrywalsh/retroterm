@@ -942,7 +942,7 @@
     {
       "type": "timeseries",
       "title": "Time to connect",
-      "description": "Through Tor; Chinese boards often take 30 to 60 seconds.",
+      "description": "Through Tor, including any retries on a new circuit. Chinese boards often take 30 to 60 seconds.",
       "datasource": {
         "type": "prometheus",
         "uid": "prometheus"
@@ -1060,12 +1060,114 @@
       "id": 17
     },
     {
+      "type": "timeseries",
+      "title": "Dial tries an hour, by result",
+      "description": "Each Tor try is on a new circuit (new exit IP); a connection makes up to 3. timeout: the circuit stalled. general: Tor's catch-all, often DNS failing at the exit. refused/unreachable: the board said no or is down. proxy_down: the tor container didn't answer.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 0,
+        "y": 45,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum by (result) (increase(retroterm_dial_attempts_total{job=\"retroterm\"}[1h]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "legendFormat": "{{result}}"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "custom": {
+            "drawStyle": "bars",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "id": 25
+    },
+    {
+      "type": "stat",
+      "title": "Tries per connection attempt, 24 h",
+      "description": "Dial tries divided by connection attempts (ok + failed). 1 means the first circuit always worked.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "gridPos": {
+        "x": 12,
+        "y": 45,
+        "w": 12,
+        "h": 8
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "sum(increase(retroterm_dial_attempts_total{job=\"retroterm\"}[24h])) / sum(increase(retroterm_connects_total{job=\"retroterm\",result=~\"ok|failed\"}[24h]))",
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "legendFormat": ""
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "none",
+          "color": {
+            "mode": "fixed",
+            "fixedColor": "green"
+          },
+          "decimals": 2
+        },
+        "overrides": []
+      },
+      "options": {
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "colorMode": "value",
+        "graphMode": "area",
+        "textMode": "auto",
+        "justifyMode": "center"
+      },
+      "id": 26
+    },
+    {
       "type": "row",
       "title": "Traffic and downloads",
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 45,
+        "y": 53,
         "w": 24,
         "h": 1
       },
@@ -1082,7 +1184,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 46,
+        "y": 54,
         "w": 12,
         "h": 8
       },
@@ -1133,7 +1235,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 46,
+        "y": 54,
         "w": 12,
         "h": 8
       },
@@ -1180,7 +1282,7 @@
       "collapsed": false,
       "gridPos": {
         "x": 0,
-        "y": 54,
+        "y": 62,
         "w": 24,
         "h": 1
       },
@@ -1197,7 +1299,7 @@
       },
       "gridPos": {
         "x": 0,
-        "y": 55,
+        "y": 63,
         "w": 12,
         "h": 8
       },
@@ -1257,7 +1359,7 @@
       },
       "gridPos": {
         "x": 12,
-        "y": 55,
+        "y": 63,
         "w": 12,
         "h": 8
       },
