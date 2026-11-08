@@ -19,6 +19,7 @@ class BBSTerminal {
         this.awaitingCharset = false;
         this.music = null;
         this.isFullscreen = false;
+        this.syncTermId = 'off'; // 'on' answers board queries like SyncTERM
         
         this.loadConfig();
         this.initTerminal();
@@ -286,6 +287,8 @@ class BBSTerminal {
         } catch (e) {
         }
 
+        this.registerSyncTermAnswers();
+
         // The WebGL renderer caches each glyph the first time it draws it, and
         // drawing on a canvas doesn't make the browser fetch Unifont, so text
         // drawn before the font arrives would keep the fallback font's glyphs
@@ -443,6 +446,14 @@ class BBSTerminal {
             });
         }
 
+        const stSelect = document.getElementById('syncterm-id');
+        if (stSelect) {
+            stSelect.addEventListener('change', (e) => {
+                this.syncTermId = e.target.value === 'on' ? 'on' : 'off';
+                this.saveSettings();
+            });
+        }
+
         // Keyboard shortcuts: d=Directory, s=Settings, Esc=close
         document.addEventListener('keydown', (e) => {
             const activeTag = document.activeElement && document.activeElement.tagName.toLowerCase();
@@ -481,6 +492,37 @@ class BBSTerminal {
                     data: data
                 }));
             }
+        });
+    }
+
+    // Synchronet only sends Sixel to SyncTERM: it reads a CTerm version from
+    // the primary device attributes reply, then wants "pixel ops" (4) in the
+    // CTerm device attributes (ESC[<c). With the setting on, answer as CTerm
+    // 1.213, the lowest version covering Sixel and those attributes, and
+    // report only pixel ops so Synchronet skips font uploads and palettes.
+    // The font state answer (no font set) keeps its font check from waiting
+    // 3 s for a reply. Off, xterm.js answers as usual.
+    registerSyncTermAnswers() {
+        const parser = this.terminal && this.terminal.parser;
+        if (!parser || !parser.registerCsiHandler) return;
+        const on = () => this.syncTermId === 'on';
+        const reply = (s) => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ type: 'data', data: s }));
+            }
+            return true;
+        };
+        parser.registerCsiHandler({ final: 'c' }, (params) => {
+            if (!on() || params.length > 1 || (params[0] || 0) !== 0) return false;
+            return reply('\x1b[=67;84;101;114;109;1;213c');
+        });
+        parser.registerCsiHandler({ prefix: '<', final: 'c' }, () => {
+            if (!on()) return false;
+            return reply('\x1b[<0;4c');
+        });
+        parser.registerCsiHandler({ prefix: '=', final: 'n' }, (params) => {
+            if (!on() || params[0] !== 1) return false;
+            return reply('\x1b[=1;43;99;0;0;0;0n');
         });
     }
 
@@ -977,7 +1019,8 @@ class BBSTerminal {
             fontSize: this.fontSize,
             size: `${this.currentSize.cols}x${this.currentSize.rows}`,
             charset: charset,
-            mobileMode: this.mobileMode
+            mobileMode: this.mobileMode,
+            syncTermId: this.syncTermId
         }));
     }
 
@@ -1018,6 +1061,9 @@ class BBSTerminal {
             }
             const mmSelect = document.getElementById('mobile-mode-toggle');
             if (mmSelect) mmSelect.value = this.mobileMode;
+            if (parsed.syncTermId === 'on') this.syncTermId = 'on';
+            const stSelect = document.getElementById('syncterm-id');
+            if (stSelect) stSelect.value = this.syncTermId;
         } else {
             const charsetEl = document.getElementById('charset');
             if (charsetEl) {
