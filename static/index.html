@@ -131,6 +131,15 @@
                 </div>
                 
                 <div class="form-group">
+                    <label for="syncterm-id">Identify as SyncTERM</label>
+                    <select id="syncterm-id" class="form-control">
+                        <option value="off">Off (default)</option>
+                        <option value="on">On</option>
+                    </select>
+                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Lets Synchronet boards send Sixel images. Takes effect on the next connect.</div>
+                </div>
+
+                <div class="form-group">
                     <label for="font-size">Font Size</label>
                     <input type="range" id="font-size" min="12" max="24" value="16" class="form-range">
                     <span id="font-size-value">16px</span>
@@ -154,6 +163,6 @@
     <script src="ansi-music.js"></script>
     <script src="directory.js?v=4"></script>
     <script src="auth.js?v=9"></script>
-    <script src="app.js?v=13"></script>
+    <script src="app.js?v=14"></script>
 </body>
 </html>
