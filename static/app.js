@@ -19,7 +19,7 @@ class BBSTerminal {
         this.awaitingCharset = false;
         this.music = null;
         this.isFullscreen = false;
-        this.syncTermId = 'off'; // 'on' answers board queries like SyncTERM
+        this.sixel = 'off'; // 'on' tells boards we draw Sixel (see registerSixelAnswers)
         
         this.loadConfig();
         this.initTerminal();
@@ -287,7 +287,7 @@ class BBSTerminal {
         } catch (e) {
         }
 
-        this.registerSyncTermAnswers();
+        this.registerSixelAnswers();
 
         // The WebGL renderer caches each glyph the first time it draws it, and
         // drawing on a canvas doesn't make the browser fetch Unifont, so text
@@ -446,14 +446,14 @@ class BBSTerminal {
             });
         }
 
-        const stBtn = document.getElementById('syncterm-btn');
-        if (stBtn) {
-            stBtn.addEventListener('click', () => {
-                this.syncTermId = this.syncTermId === 'on' ? 'off' : 'on';
-                this.showSyncTermId();
+        const sixelBtn = document.getElementById('sixel-btn');
+        if (sixelBtn) {
+            sixelBtn.addEventListener('click', () => {
+                this.sixel = this.sixel === 'on' ? 'off' : 'on';
+                this.showSixel();
                 this.saveSettings();
                 if (this.isConnected) {
-                    this.terminal.writeln(`\r\n\x1b[33mSyncTERM identity ${this.syncTermId === 'on' ? 'on' : 'off'}: reconnect for the board to see it.\x1b[0m`);
+                    this.terminal.writeln(`\r\n\x1b[33mSixel support ${this.sixel}: reconnect for the board to see it.\x1b[0m`);
                 }
             });
         }
@@ -499,17 +499,20 @@ class BBSTerminal {
         });
     }
 
-    // Synchronet only sends Sixel to SyncTERM: it reads a CTerm version from
-    // the primary device attributes reply, then wants "pixel ops" (4) in the
-    // CTerm device attributes (ESC[<c). With the setting on, answer as CTerm
-    // 1.213, the lowest version covering Sixel and those attributes, and
-    // report only pixel ops so Synchronet skips font uploads and palettes.
-    // The font state answer (no font set) keeps its font check from waiting
-    // 3 s for a reply. Off, xterm.js answers as usual.
-    registerSyncTermAnswers() {
+    // Boards ask "what are you?" (primary device attributes, ESC[c) and
+    // decide on Sixel from the answer. Off, answer as a plain VT100, as
+    // RetroTerm always did (the image addon would otherwise claim VT220 with
+    // Sixel). On, answer the way Synchronet needs: it only sends Sixel to
+    // SyncTERM, reading a CTerm version from that reply and then wanting
+    // "pixel ops" (4) in the CTerm device attributes (ESC[<c). Claim CTerm
+    // 1.213, the lowest version covering Sixel and those attributes, and only
+    // pixel ops, so Synchronet skips font uploads and palette changes. The
+    // font state answer (no font set) keeps its font check from waiting 3 s.
+    // Images a board sends are drawn either way.
+    registerSixelAnswers() {
         const parser = this.terminal && this.terminal.parser;
         if (!parser || !parser.registerCsiHandler) return;
-        const on = () => this.syncTermId === 'on';
+        const on = () => this.sixel === 'on';
         const reply = (s) => {
             if (this.ws && this.ws.readyState === WebSocket.OPEN) {
                 this.ws.send(JSON.stringify({ type: 'data', data: s }));
@@ -517,8 +520,8 @@ class BBSTerminal {
             return true;
         };
         parser.registerCsiHandler({ final: 'c' }, (params) => {
-            if (!on() || params.length > 1 || (params[0] || 0) !== 0) return false;
-            return reply('\x1b[=67;84;101;114;109;1;213c');
+            if (params.length > 1 || (params[0] || 0) !== 0) return false;
+            return reply(on() ? '\x1b[=67;84;101;114;109;1;213c' : '\x1b[?1;2c');
         });
         parser.registerCsiHandler({ prefix: '<', final: 'c' }, () => {
             if (!on()) return false;
@@ -530,11 +533,11 @@ class BBSTerminal {
         });
     }
 
-    showSyncTermId() {
-        const btn = document.getElementById('syncterm-btn');
+    showSixel() {
+        const btn = document.getElementById('sixel-btn');
         if (!btn) return;
-        const on = this.syncTermId === 'on';
-        btn.textContent = on ? 'SyncTERM: On' : 'SyncTERM: Off';
+        const on = this.sixel === 'on';
+        btn.textContent = on ? 'Sixel: On' : 'Sixel: Off';
         btn.classList.toggle('on', on);
         btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
@@ -1033,7 +1036,7 @@ class BBSTerminal {
             size: `${this.currentSize.cols}x${this.currentSize.rows}`,
             charset: charset,
             mobileMode: this.mobileMode,
-            syncTermId: this.syncTermId
+            sixel: this.sixel
         }));
     }
 
@@ -1074,8 +1077,8 @@ class BBSTerminal {
             }
             const mmSelect = document.getElementById('mobile-mode-toggle');
             if (mmSelect) mmSelect.value = this.mobileMode;
-            if (parsed.syncTermId === 'on') this.syncTermId = 'on';
-            this.showSyncTermId();
+            if (parsed.sixel === 'on' || parsed.syncTermId === 'on') this.sixel = 'on';
+            this.showSixel();
         } else {
             const charsetEl = document.getElementById('charset');
             if (charsetEl) {
