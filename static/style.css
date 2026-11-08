@@ -130,6 +130,7 @@ body.mobile-mode #terminal-container .terminal {
     transition: all 0.2s ease;
 }
 .menu-button:hover { background: var(--bg-tertiary); color: var(--text-primary); }
+.menu-button.on { color: var(--accent-primary); border-color: var(--accent-primary); }
 .menu-dropdown {
     position: absolute;
     right: 0;
