@@ -486,7 +486,7 @@ func (c *Client) connectTelnet(host string, port int) {
 	conn, err := DialWithProxy("tcp", address)
 	if err != nil {
 		metricConnect("failed", time.Since(start), boardKey{})
-		c.sendMessage("error", err.Error())
+		c.sendMessage("error", userDialError(err))
 		return
 	}
 
@@ -1472,7 +1472,7 @@ func (c *Client) connectSSH(host string, port int, username, password string) {
 	// Use proxy if configured
 	conn, err := DialWithProxy("tcp", address)
 	if err != nil {
-		c.sendMessage("error", fmt.Sprintf("Proxy connection failed: %v", err))
+		c.sendMessage("error", userDialError(err))
 		return
 	}
 
