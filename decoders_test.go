@@ -309,3 +309,27 @@ func TestTelnetCommandsSplitAcrossReads(t *testing.T) {
 		}
 	}
 }
+
+// A sixel image (DCS q ... ST) must reach the browser byte for byte: the
+// image addon decodes it there. This one is a 2-color 12x12 checker with a
+// raster attribute, color registers, repeats and a graphics newline.
+const testSixel = "\x1bP0;1;0q\"1;1;12;12#0;2;0;0;0#1;2;100;0;0" +
+	"#1!6~!6?$#0!6?!6~-#1!6~!6?$#0!6?!6~\x1b\\"
+
+func TestSixelPassesThroughUnchanged(t *testing.T) {
+	stream := "before " + testSixel + " after\x1b[0m"
+	for _, cs := range []string{"CP437", "UTF-8"} {
+		for _, split := range []int{len(stream), 9, 30} { // whole, and cut mid-sequence
+			c := &Client{charset: cs}
+			p := NewANSIEnhancedProcessor(false)
+			var out []byte
+			for i := 0; i < len(stream); i += split {
+				end := min(i+split, len(stream))
+				out = append(out, normalizeCSISGRAny(c.convertCharsetToOutput(p.ProcessANSIData([]byte(stream[i:end]))))...)
+			}
+			if string(out) != stream {
+				t.Errorf("%s split %d: got %q", cs, split, out)
+			}
+		}
+	}
+}

@@ -270,6 +270,22 @@ class BBSTerminal {
         } catch (e) {
         }
 
+        // Sixel graphics (DEC bitmap images, sent by some boards and doors).
+        // Images are capped well below the addon's defaults: a board image is
+        // at most a few screens, and the storage is per browser tab.
+        try {
+            if (window.ImageAddon) {
+                this.terminal.loadAddon(new ImageAddon.ImageAddon({
+                    sixelSupport: true,
+                    iipSupport: false,
+                    pixelLimit: 4194304,     // 2048x2048
+                    sixelSizeLimit: 8000000, // bytes in one image sequence
+                    storageLimit: 32         // MB of images kept for scrollback
+                }));
+            }
+        } catch (e) {
+        }
+
         // The WebGL renderer caches each glyph the first time it draws it, and
         // drawing on a canvas doesn't make the browser fetch Unifont, so text
         // drawn before the font arrives would keep the fallback font's glyphs
