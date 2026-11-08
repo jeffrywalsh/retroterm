@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>RetroTerm - BBS Terminal</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=9">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 </head>
 <body>
@@ -45,6 +45,9 @@
                 <div class="status-item">
                     <button id="reconnect-btn-header" class="btn btn-primary btn-small" style="display: none;" title="Reconnect to last BBS" aria-label="Reconnect to last BBS">Reconnect</button>
                     <button id="disconnect-btn-header" class="btn btn-danger btn-small" style="display: none;" title="Disconnect" aria-label="Disconnect">Disconnect</button>
+                </div>
+                <div class="status-item">
+                    <button id="syncterm-btn" class="btn-small menu-button" aria-pressed="false" title="Answer boards as SyncTERM so Synchronet sends Sixel images. Takes effect on the next connect.">SyncTERM: Off</button>
                 </div>
                 <div class="status-item">
                     <button id="fullscreen-btn" class="btn-small menu-button" title="Fullscreen (F)" aria-label="Fullscreen">Fullscreen</button>
@@ -131,15 +134,6 @@
                 </div>
                 
                 <div class="form-group">
-                    <label for="syncterm-id">Identify as SyncTERM</label>
-                    <select id="syncterm-id" class="form-control">
-                        <option value="off">Off (default)</option>
-                        <option value="on">On</option>
-                    </select>
-                    <div style="color: var(--text-secondary); font-size: 0.85rem; margin-top: 0.25rem;">Lets Synchronet boards send Sixel images. Takes effect on the next connect.</div>
-                </div>
-
-                <div class="form-group">
                     <label for="font-size">Font Size</label>
                     <input type="range" id="font-size" min="12" max="24" value="16" class="form-range">
                     <span id="font-size-value">16px</span>
@@ -163,6 +157,6 @@
     <script src="ansi-music.js"></script>
     <script src="directory.js?v=4"></script>
     <script src="auth.js?v=9"></script>
-    <script src="app.js?v=14"></script>
+    <script src="app.js?v=15"></script>
 </body>
 </html>

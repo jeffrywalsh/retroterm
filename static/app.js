@@ -446,11 +446,15 @@ class BBSTerminal {
             });
         }
 
-        const stSelect = document.getElementById('syncterm-id');
-        if (stSelect) {
-            stSelect.addEventListener('change', (e) => {
-                this.syncTermId = e.target.value === 'on' ? 'on' : 'off';
+        const stBtn = document.getElementById('syncterm-btn');
+        if (stBtn) {
+            stBtn.addEventListener('click', () => {
+                this.syncTermId = this.syncTermId === 'on' ? 'off' : 'on';
+                this.showSyncTermId();
                 this.saveSettings();
+                if (this.isConnected) {
+                    this.terminal.writeln(`\r\n\x1b[33mSyncTERM identity ${this.syncTermId === 'on' ? 'on' : 'off'}: reconnect for the board to see it.\x1b[0m`);
+                }
             });
         }
 
@@ -524,6 +528,15 @@ class BBSTerminal {
             if (!on() || params[0] !== 1) return false;
             return reply('\x1b[=1;43;99;0;0;0;0n');
         });
+    }
+
+    showSyncTermId() {
+        const btn = document.getElementById('syncterm-btn');
+        if (!btn) return;
+        const on = this.syncTermId === 'on';
+        btn.textContent = on ? 'SyncTERM: On' : 'SyncTERM: Off';
+        btn.classList.toggle('on', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
 
     connectToBBS(host, port, protocol, charset) {
@@ -1062,8 +1075,7 @@ class BBSTerminal {
             const mmSelect = document.getElementById('mobile-mode-toggle');
             if (mmSelect) mmSelect.value = this.mobileMode;
             if (parsed.syncTermId === 'on') this.syncTermId = 'on';
-            const stSelect = document.getElementById('syncterm-id');
-            if (stSelect) stSelect.value = this.syncTermId;
+            this.showSyncTermId();
         } else {
             const charsetEl = document.getElementById('charset');
             if (charsetEl) {
