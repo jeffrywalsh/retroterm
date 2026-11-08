@@ -19,6 +19,7 @@ class BBSTerminal {
         this.awaitingCharset = false;
         this.music = null;
         this.isFullscreen = false;
+        this.sixel = 'off'; // 'on' tells boards we draw Sixel (see registerSixelAnswers)
         
         this.loadConfig();
         this.initTerminal();
@@ -270,6 +271,24 @@ class BBSTerminal {
         } catch (e) {
         }
 
+        // Sixel graphics (DEC bitmap images, sent by some boards and doors).
+        // Images are capped well below the addon's defaults: a board image is
+        // at most a few screens, and the storage is per browser tab.
+        try {
+            if (window.ImageAddon) {
+                this.terminal.loadAddon(new ImageAddon.ImageAddon({
+                    sixelSupport: true,
+                    iipSupport: false,
+                    pixelLimit: 4194304,     // 2048x2048
+                    sixelSizeLimit: 8000000, // bytes in one image sequence
+                    storageLimit: 32         // MB of images kept for scrollback
+                }));
+            }
+        } catch (e) {
+        }
+
+        this.registerSixelAnswers();
+
         // The WebGL renderer caches each glyph the first time it draws it, and
         // drawing on a canvas doesn't make the browser fetch Unifont, so text
         // drawn before the font arrives would keep the fallback font's glyphs
@@ -427,6 +446,18 @@ class BBSTerminal {
             });
         }
 
+        const sixelBtn = document.getElementById('sixel-btn');
+        if (sixelBtn) {
+            sixelBtn.addEventListener('click', () => {
+                this.sixel = this.sixel === 'on' ? 'off' : 'on';
+                this.showSixel();
+                this.saveSettings();
+                if (this.isConnected) {
+                    this.terminal.writeln(`\r\n\x1b[33mSixel support ${this.sixel}: reconnect for the board to see it.\x1b[0m`);
+                }
+            });
+        }
+
         // Keyboard shortcuts: d=Directory, s=Settings, Esc=close
         document.addEventListener('keydown', (e) => {
             const activeTag = document.activeElement && document.activeElement.tagName.toLowerCase();
@@ -466,6 +497,49 @@ class BBSTerminal {
                 }));
             }
         });
+    }
+
+    // Boards ask "what are you?" (primary device attributes, ESC[c) and
+    // decide on Sixel from the answer. Off, answer as a plain VT100, as
+    // RetroTerm always did (the image addon would otherwise claim VT220 with
+    // Sixel). On, answer the way Synchronet needs: it only sends Sixel to
+    // SyncTERM, reading a CTerm version from that reply and then wanting
+    // "pixel ops" (4) in the CTerm device attributes (ESC[<c). Claim CTerm
+    // 1.213, the lowest version covering Sixel and those attributes, and only
+    // pixel ops, so Synchronet skips font uploads and palette changes. The
+    // font state answer (no font set) keeps its font check from waiting 3 s.
+    // Images a board sends are drawn either way.
+    registerSixelAnswers() {
+        const parser = this.terminal && this.terminal.parser;
+        if (!parser || !parser.registerCsiHandler) return;
+        const on = () => this.sixel === 'on';
+        const reply = (s) => {
+            if (this.ws && this.ws.readyState === WebSocket.OPEN) {
+                this.ws.send(JSON.stringify({ type: 'data', data: s }));
+            }
+            return true;
+        };
+        parser.registerCsiHandler({ final: 'c' }, (params) => {
+            if (params.length > 1 || (params[0] || 0) !== 0) return false;
+            return reply(on() ? '\x1b[=67;84;101;114;109;1;213c' : '\x1b[?1;2c');
+        });
+        parser.registerCsiHandler({ prefix: '<', final: 'c' }, () => {
+            if (!on()) return false;
+            return reply('\x1b[<0;4c');
+        });
+        parser.registerCsiHandler({ prefix: '=', final: 'n' }, (params) => {
+            if (!on() || params[0] !== 1) return false;
+            return reply('\x1b[=1;43;99;0;0;0;0n');
+        });
+    }
+
+    showSixel() {
+        const btn = document.getElementById('sixel-btn');
+        if (!btn) return;
+        const on = this.sixel === 'on';
+        btn.textContent = on ? 'Sixel: On' : 'Sixel: Off';
+        btn.classList.toggle('on', on);
+        btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     }
 
     connectToBBS(host, port, protocol, charset) {
@@ -961,7 +1035,8 @@ class BBSTerminal {
             fontSize: this.fontSize,
             size: `${this.currentSize.cols}x${this.currentSize.rows}`,
             charset: charset,
-            mobileMode: this.mobileMode
+            mobileMode: this.mobileMode,
+            sixel: this.sixel
         }));
     }
 
@@ -1002,6 +1077,8 @@ class BBSTerminal {
             }
             const mmSelect = document.getElementById('mobile-mode-toggle');
             if (mmSelect) mmSelect.value = this.mobileMode;
+            if (parsed.sixel === 'on' || parsed.syncTermId === 'on') this.sixel = 'on';
+            this.showSixel();
         } else {
             const charsetEl = document.getElementById('charset');
             if (charsetEl) {

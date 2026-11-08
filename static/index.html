@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=5.0, user-scalable=yes">
     <title>RetroTerm - BBS Terminal</title>
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css">
-    <link rel="stylesheet" href="style.css?v=8">
+    <link rel="stylesheet" href="style.css?v=9">
     <link rel="icon" type="image/svg+xml" href="/favicon.svg">
 </head>
 <body>
@@ -45,6 +45,9 @@
                 <div class="status-item">
                     <button id="reconnect-btn-header" class="btn btn-primary btn-small" style="display: none;" title="Reconnect to last BBS" aria-label="Reconnect to last BBS">Reconnect</button>
                     <button id="disconnect-btn-header" class="btn btn-danger btn-small" style="display: none;" title="Disconnect" aria-label="Disconnect">Disconnect</button>
+                </div>
+                <div class="status-item">
+                    <button id="sixel-btn" class="btn-small menu-button" aria-pressed="false" title="Sixel support: tells boards RetroTerm can draw Sixel images (Synchronet boards need this). Takes effect on the next connect.">Sixel: Off</button>
                 </div>
                 <div class="status-item">
                     <button id="fullscreen-btn" class="btn-small menu-button" title="Fullscreen (F)" aria-label="Fullscreen">Fullscreen</button>
@@ -148,11 +151,12 @@
     <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/xterm-addon-webgl@0.16.0/lib/xterm-addon-webgl.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xterm-addon-image@0.5.0/lib/xterm-addon-image.js"></script>
     <script src="zmodem.min.js"></script>
     <script src="zmodem-lib.js"></script>
     <script src="ansi-music.js"></script>
     <script src="directory.js?v=4"></script>
     <script src="auth.js?v=9"></script>
-    <script src="app.js?v=12"></script>
+    <script src="app.js?v=16"></script>
 </body>
 </html>
