@@ -55,6 +55,9 @@ func DialWithProxy(network, address string) (net.Conn, error) {
 	if AppConfig == nil || !AppConfig.Proxy.Enabled {
 		conn, err := net.DialTimeout(network, address, dialTimeout)
 		metricDialAttempt(dialFailReason(err))
+		if err != nil {
+			log.Printf("DIAL: %s failed (%s): %v", address, dialFailReason(err), err)
+		}
 		return conn, err
 	}
 
@@ -116,4 +119,25 @@ func dialFailReason(err error) string {
 		return "reset"
 	}
 	return "other"
+}
+
+// userDialError is what the browser sees when a board can't be reached. The
+// raw error names the proxy and internal addresses, so it stays in the log
+// (DialWithProxy already logs it) and the user gets a plain reason.
+func userDialError(err error) string {
+	switch dialFailReason(err) {
+	case "timeout":
+		return "The board didn't answer in time. It may be down or busy; try again later."
+	case "refused":
+		return "The board refused the connection. It may be down right now."
+	case "unreachable", "general":
+		return "The board can't be reached right now. Try again later."
+	case "reset":
+		return "The board closed the connection. Try again later."
+	case "exit_policy":
+		return "That board can't be reached through RetroTerm's connection."
+	case "proxy_down":
+		return "RetroTerm's outbound connection is down. Please try again in a few minutes."
+	}
+	return "Couldn't connect to the board. Try again later."
 }
