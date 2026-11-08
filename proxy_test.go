@@ -175,3 +175,19 @@ func TestDialFailReason(t *testing.T) {
 		t.Errorf("stalled handshake: got %s", got)
 	}
 }
+
+func TestUserDialErrorHidesInternals(t *testing.T) {
+	raw := errors.New("proxy dial failed: socks connect tcp vpn:1080->bbs.example:23: read tcp 172.18.0.2:46882->172.18.0.18:1080: i/o timeout")
+	msg := userDialError(raw)
+	for _, leak := range []string{"vpn", "1080", "172.18", "socks"} {
+		if strings.Contains(msg, leak) {
+			t.Fatalf("message leaks %q: %s", leak, msg)
+		}
+	}
+	if !strings.Contains(msg, "didn't answer") {
+		t.Fatalf("timeout got %q", msg)
+	}
+	if got := userDialError(errors.New("connection refused")); !strings.Contains(got, "refused") {
+		t.Fatalf("refused got %q", got)
+	}
+}
