@@ -931,6 +931,7 @@ class BBSTerminal {
         const area = document.querySelector('.terminal-area');
         if (!area || this.isFullscreen) return;
         this.isFullscreen = true;
+        this._fsScroll = this.scrollState();
         area.classList.add('fs');
         document.body.classList.add('terminal-fullscreen');
         const native = area.requestFullscreen || area.webkitRequestFullscreen;
@@ -954,6 +955,7 @@ class BBSTerminal {
 
     exitFullscreen() {
         if (!this.isFullscreen) return;
+        if (!this._fsScroll) this._fsScroll = this.scrollState();
         const fsEl = document.fullscreenElement || document.webkitFullscreenElement;
         if (fsEl) {
             (document.exitFullscreen || document.webkitExitFullscreen).call(document);
@@ -970,19 +972,50 @@ class BBSTerminal {
         const area = document.querySelector('.terminal-area');
         if (area) area.classList.remove('fs', 'pseudo');
         document.body.classList.remove('terminal-fullscreen');
+        const scroll = this._fsScroll || this.scrollState();
+        this._fsScroll = null;
         this.terminal.options.fontSize = this.fontSize;
+        this.restoreScroll(scroll);
         if (this.isMobileModeEnabled()) this.fitToContainerDebounced();
         this.terminal.focus();
     }
 
     fitFullscreenFontDebounced() {
+        if (!this._fsScroll) this._fsScroll = this.scrollState();
         clearTimeout(this._fsTimer);
         this._fsTimer = setTimeout(() => this.fitFullscreenFont(), 80);
+    }
+
+    // Changing the font or the layout makes the browser clamp the
+    // viewport's scroll position against its old height, and xterm takes
+    // that scroll as the user scrolling up into the scrollback: the screen
+    // ends up mixed with old lines and new output stops following. So note
+    // where the view was before, and put it back once the browser's scroll
+    // events have landed.
+    scrollState() {
+        const b = this.terminal && this.terminal.buffer.active;
+        return b ? { bottom: b.viewportY >= b.baseY, y: b.viewportY } : null;
+    }
+
+    restoreScroll(state) {
+        if (!state) return;
+        const put = () => {
+            if (state.bottom) this.terminal.scrollToBottom();
+            else this.terminal.scrollToLine(state.y);
+        };
+        put();
+        requestAnimationFrame(() => requestAnimationFrame(put));
     }
 
     // Largest whole font size whose grid fits the screen
     fitFullscreenFont() {
         if (!this.isFullscreen || !this.terminal) return;
+        const scroll = this._fsScroll || this.scrollState();
+        this._fsScroll = null;
+        try { this.fitFullscreenFontSize(); } finally { this.restoreScroll(scroll); }
+    }
+
+    fitFullscreenFontSize() {
         const area = document.querySelector('.terminal-area');
         const screen = area && area.querySelector('.xterm-screen');
         if (!screen) return;
