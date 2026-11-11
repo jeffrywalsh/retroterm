@@ -95,3 +95,12 @@ node_modules/
 !deploy/tor/README.md
 !deploy/tor/Dockerfile
 !deploy/tor/torrc
+
+# PIA VPN on dellcon (see deploy/vpn/README.md)
+!deploy/vpn/
+!deploy/vpn/README.md
+!deploy/vpn/rotate.sh
+!deploy/vpn/retroterm-vpn-rotate.service
+!deploy/vpn/retroterm-vpn-rotate.timer
+!deploy/vpn/socks/
+!deploy/vpn/socks/Dockerfile

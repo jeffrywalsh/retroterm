@@ -1,0 +1,8 @@
+[Unit]
+Description=Rotate RetroTerm PIA exit IP when idle
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/data/vpn/rotate.sh
