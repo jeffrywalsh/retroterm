@@ -1,0 +1,29 @@
+# VPN for RetroTerm's outbound connections. Merge into your compose file and
+# set config.json's proxy to { "type": "socks5", "host": "vpn", "port": 1080 }.
+# Shown with Private Internet Access; gluetun supports many providers.
+services:
+  vpn:
+    image: qmcgaw/gluetun:v3.40.0
+    restart: unless-stopped
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    env_file:
+      - ./vpn/provider.env        # OPENVPN_USER / OPENVPN_PASSWORD; keep it mode 600
+    volumes:
+      - ./vpn/gluetun:/gluetun    # servers.json, the list rotate.sh prunes
+    environment:
+      VPN_SERVICE_PROVIDER: private internet access
+      VPN_TYPE: openvpn
+      SERVER_REGIONS: US East,US Chicago,US Texas,US West   # pick your own
+      FIREWALL_INPUT_PORTS: "1080"
+
+  # Shares the vpn container's network. After restarting vpn, recreate this:
+  #   docker compose up -d --force-recreate --no-deps vpn-socks
+  vpn-socks:
+    build: ./vpn/socks
+    restart: unless-stopped
+    network_mode: "service:vpn"
+    depends_on:
+      - vpn

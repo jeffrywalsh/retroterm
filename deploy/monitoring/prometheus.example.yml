@@ -1,0 +1,6 @@
+# Scrape RetroTerm's metrics (METRICS_ADDR=:9188). Use an address Prometheus
+# can reach that isn't public.
+scrape_configs:
+  - job_name: retroterm
+    static_configs:
+      - targets: ["retroterm:9188"]

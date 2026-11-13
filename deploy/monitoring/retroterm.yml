@@ -1,5 +1,0 @@
-# retroterm.com's /metrics (METRICS_ADDR=:9188, published on the LAN address).
-scrape_configs:
-  - job_name: retroterm
-    static_configs:
-      - targets: ["192.168.1.64:9188"]

@@ -1,6 +1,6 @@
-# Tor client for RetroTerm outbound connections (replaces dperson/torproxy,
-# which was stuck on Tor 0.4.3.5 from 2020). Rebuild to pick up Tor updates:
-#   cd /data && sudo docker compose build --pull tor && sudo docker compose up -d tor
+# Tor client for RetroTerm's outbound connections. In config.json:
+#   "proxy": { "enabled": true, "type": "tor", "host": "tor", "port": 9050 }
+# Rebuild now and then to pick up Tor updates.
 FROM debian:trixie-slim
 RUN apt-get update \
  && apt-get install -y --no-install-recommends tor ca-certificates \
