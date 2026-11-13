@@ -1,13 +1,15 @@
 #!/bin/bash
-# Move RetroTerm's PIA VPN to a new server, so outbound BBS connections get a
-# new exit IP, and bring it back when it's down. Run by
-# retroterm-vpn-rotate.timer every 15 minutes.
+# Move RetroTerm's VPN (compose.example.yaml) to a new server, so outbound BBS
+# connections get a new exit IP, and bring it back when it's down. Run it as
+# root from a systemd timer or cron every 15 minutes, for example:
+#   */15 * * * * COMPOSE_DIR=/srv/retroterm /srv/retroterm/vpn/rotate.sh
 #
 # 1. Rotate only when no BBS session is open (a reconnect drops them all) and
-#    the last rotation was at least MIN_INTERVAL ago. If the tunnel is down,
+#    the last rotation was at least MIN_INTERVAL ago (sessions are read from
+#    RetroTerm's metrics, METRICS_ADDR). If the tunnel is down,
 #    skip the interval check: rotating is how it comes back.
-# 2. Fetch PIA's current server list. PIA retires servers, and a stale list
-#    left the VPN cycling through dead ones (2026-11-11).
+# 2. Fetch the provider's current server list. Providers retire servers, and
+#    with a stale list gluetun can spend hours cycling through dead ones.
 # 3. Ping every address in SERVER_REGIONS and drop the ones that don't answer,
 #    and the current one, from the list gluetun reads.
 # 4. Restart the VPN (gluetun reads the list only at start; vpn-socks shares
@@ -15,22 +17,25 @@
 #    through the new tunnel, drop the address it tried and restart again.
 #
 # FORCE=1 skips the interval check. DRY_RUN=1 stops before touching the VPN
-# and puts the list back. Never prints the PIA credentials.
+# and puts the list back. Settings below can be overridden from the
+# environment.
 set -u
 MIN_INTERVAL=${MIN_INTERVAL:-5400}
 TRIES=${TRIES:-4}
 MIN_ALIVE=${MIN_ALIVE:-10}
-STATE=/var/lib/retroterm-vpn-rotate
-METRICS=http://SERVER_IP:9188/metrics
-COMPOSE_DIR=/data
-LIST=/data/vpn/gluetun/servers.json
+STATE=${STATE:-/var/lib/retroterm-vpn-rotate}
+METRICS=${METRICS:-http://127.0.0.1:9188/metrics}
+COMPOSE_DIR=${COMPOSE_DIR:-.}
+COMPOSE_FILE_NAME=${COMPOSE_FILE_NAME:-docker-compose.yml}
+LIST=${LIST:-$COMPOSE_DIR/vpn/gluetun/servers.json}
 CURL=curlimages/curl:8.10.1
 GLUETUN=qmcgaw/gluetun:v3.40.0
-PROVIDER="private internet access"
+PROVIDER=${PROVIDER:-private internet access}
+VPN_CONTAINER=${VPN_CONTAINER:-$(cd "$COMPOSE_DIR" && docker compose -f "${COMPOSE_FILE_NAME:-docker-compose.yml}" ps -q vpn)}
 mkdir -p "$STATE"
 
 exit_ip() {
-  docker run --rm --network container:data-vpn-1 "$CURL" -s -m 10 \
+  docker run --rm --network container:$VPN_CONTAINER "$CURL" -s -m 10 \
     --socks5-hostname 127.0.0.1:1080 https://ipinfo.io/ip 2>/dev/null
 }
 
@@ -46,17 +51,17 @@ if [ -z "$sessions" ]; then echo "skip: can't read retroterm_sessions"; exit 0; 
 if [ "$sessions" != 0 ]; then echo "skip: $sessions BBS session(s) open"; exit 0; fi
 [ -z "$old" ] && echo "tunnel is down; rotating to bring it back"
 
-# 2. Fresh list from PIA
+# 2. Fresh list from the provider
 cp "$LIST" "$STATE/servers.prev.json"
 if ! docker run --rm -v "$(dirname "$LIST")":/gluetun "$GLUETUN" \
     update -enduser -providers "$PROVIDER" >"$STATE/update.log" 2>&1; then
-  echo "couldn't refresh the list from PIA; using the last one"
+  echo "couldn't refresh the server list; using the last one"
   cp "$STATE/servers.prev.json" "$LIST"
 fi
 cp "$LIST" "$STATE/servers.full.json"
 
 # 3. Ping every address in our regions
-regions=$(sed -n 's/^ *SERVER_REGIONS: *//p' "$COMPOSE_DIR/docker-compose.yml" | head -1)
+regions=$(sed -n 's/^ *SERVER_REGIONS: *//p' "$COMPOSE_DIR/$COMPOSE_FILE_NAME" | head -1)
 python3 - "$STATE/servers.full.json" "$regions" "$PROVIDER" >"$STATE/candidates" <<'EOF'
 import json, sys
 servers = json.load(open(sys.argv[1]))[sys.argv[3]]["servers"]
@@ -111,15 +116,15 @@ for try in $(seq 1 "$TRIES"); do
   [ -s "$STATE/alive" ] || { echo "no live addresses left"; break; }
   prune
   since=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-  (cd "$COMPOSE_DIR" && docker compose restart vpn >/dev/null 2>&1 &&
-    docker compose up -d --force-recreate --no-deps vpn-socks >/dev/null 2>&1)
+  (cd "$COMPOSE_DIR" && docker compose -f "$COMPOSE_FILE_NAME" restart vpn >/dev/null 2>&1 &&
+    docker compose -f "$COMPOSE_FILE_NAME" up -d --force-recreate --no-deps vpn-socks >/dev/null 2>&1)
   for i in $(seq 1 12); do
     sleep 5
     new=$(exit_ip)
     [ -n "$new" ] && break
   done
   [ -n "$new" ] && break
-  tried=$(docker logs --since "$since" data-vpn-1 2>&1 |
+  tried=$(docker logs --since "$since" "$VPN_CONTAINER" 2>&1 |
     sed -n 's/.*link remote: \[AF_INET\]\([0-9.]*\):.*/\1/p' | sort -u)
   echo "try $try: no tunnel after 60s (tried: ${tried:-unknown})"
   for ip in $tried; do grep -vxF "$ip" "$STATE/alive" >"$STATE/alive.new"; mv "$STATE/alive.new" "$STATE/alive"; done

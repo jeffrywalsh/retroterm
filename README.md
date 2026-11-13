@@ -175,9 +175,7 @@ Environment variables:
 
 ## Deployment
 
-retroterm.com runs in Docker on a home server and is reachable only through a Cloudflare Tunnel. The tunnel kit, its helper and the rollback steps are in [`deploy/tunnel/README.md`](deploy/tunnel/README.md).
-
-Metrics go to the shared Grafana on the same host; see [`deploy/monitoring/README.md`](deploy/monitoring/README.md).
+[`deploy/`](deploy/README.md) has samples: dialing boards through Tor or a VPN, and a Prometheus scrape config with a Grafana dashboard for the metrics.
 
 Cloudflare caches `.js` and `.css` for 4 hours, so bump the `?v=` on each changed file's tag in `static/index.html` when you change it.
 
